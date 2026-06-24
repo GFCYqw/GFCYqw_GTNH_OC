@@ -4,12 +4,12 @@
     1. AR眼镜实时显示流体存量、变化率、阈值警告。
     2. 每30秒检查一次，若某流体低于阈值，自动调整所有太空钻机参数。
     3. 自动发现钻机。
-    4. 终端以仪表板形式显示当前状态（每30秒刷新）。
+    4. 终端以仪表板形式显示当前状态（每30秒刷新），展示每个流体的实际库存与阈值。
 ]]
 
 local component = require("component")
-local glasses = component.glasses
-local me = component.me_interface
+local glasses = component.glasses      -- 可能为 nil
+local me = component.me_interface      -- 可能为 nil
 local event = require("event")
 local os = require("os")
 local term = require("term")
@@ -55,7 +55,6 @@ local texts = {}
 local lastAmounts = {}
 local doContinue = true
 local lastCheckTime = 0
-local adjustmentLog = ""    -- 记录最后一次调整动作
 
 local PROCESSED_FLUIDS = {}
 local gt_machines = {}
@@ -88,7 +87,7 @@ local function GetUtf8Len(str)
 end
 
 local function getFluidAmount(fluidName)
-    if not me then return nil end
+    if not me then return nil end          -- 无 ME 接口直接返回 nil
     local ok, fluids = pcall(me.getFluidsInNetwork, me)
     if not ok then meConnected = false; return nil end
     meConnected = true
@@ -99,21 +98,6 @@ local function getFluidAmount(fluidName)
         end
     end
     return 0
-end
-
-local function getFluidRatios()
-    local ratios = {}
-    for _, fluid in ipairs(PROCESSED_FLUIDS) do
-        local amount = getFluidAmount(fluid.name)
-        if amount == nil then
-            ratios[fluid.name] = nil
-        elseif fluid.threshold and fluid.threshold > 0 then
-            ratios[fluid.name] = amount / fluid.threshold
-        else
-            ratios[fluid.name] = 1
-        end
-    end
-    return ratios
 end
 
 -- ==================== 眼镜显示 ====================
@@ -162,7 +146,7 @@ local function setShadowText(key, text, r, g, b)
 end
 
 local function glassesSetup()
-    if not glasses then return end
+    if not glasses then return end        -- 无眼镜则跳过
     glasses.removeAll()
     createShadowText(statusKey, offsetX, offsetY)
     createShadowText(machineKey, offsetX, offsetY + lineSpacing)
@@ -173,7 +157,7 @@ local function glassesSetup()
 end
 
 local function updateGlasses()
-    if not glasses then return end
+    if not glasses then return end        -- 无眼镜则跳过
     local statusText = meConnected and "ME: 在线" or "ME: 离线"
     local statusColor = meConnected and {85, 255, 85} or {255, 85, 85}
     setShadowText(statusKey, statusText, table.unpack(statusColor))
@@ -271,38 +255,40 @@ local function findFluidToRefill()
     return nil
 end
 
--- ==================== 终端仪表板 ====================
+-- ==================== 终端仪表板（显示数量/阈值） ====================
 local function drawDashboard(target, adjustmentMsg)
     term.clear()
-    -- 标题
+    -- 标题与状态行（添加 AR 眼镜状态）
+    local glassesStatus = glasses and "可用" or "不可用"
     print(string.format("========== 太空电梯流体监控与维持系统（按 Ctrl+C 退出） =========="))
-    print(string.format("ME网络: %s  |  钻机数: %d 台", meConnected and "在线" or "离线", #gt_machines))
+    print(string.format("ME网络: %s  |  钻机数: %d 台  |  AR眼镜: %s", 
+          meConnected and "在线" or "离线", #gt_machines, glassesStatus))
     print("----------------------------------------------")
 
-    -- 流体库存表格
+    -- 流体库存显示：名称 和 数量/阈值
     if #PROCESSED_FLUIDS > 0 then
-        local ratios = getFluidRatios()
         for i = 1, #PROCESSED_FLUIDS, 7 do
             local lineLabel = "  "
-            local lineRatio = "  "
+            local lineValue = "  "
             for j = i, math.min(i+6, #PROCESSED_FLUIDS) do
                 local fluid = PROCESSED_FLUIDS[j]
                 local label = fluid.display
-                local ratio = ratios[fluid.name]
-                local ratioStr
-                if ratio == nil then
-                    ratioStr = "断连"
-                elseif ratio >= 1 then
-                    ratioStr = "充足"
+                local amount = getFluidAmount(fluid.name)
+                local threshold = fluid.threshold
+                local valueStr
+                if amount == nil then
+                    valueStr = "断连"
+                elseif threshold == -1 then
+                    valueStr = string.format("%s (持续)", formatFluidAmount(amount))
                 else
-                    ratioStr = string.format("%.1f%%", ratio * 100)
+                    valueStr = string.format("%s / %s", formatFluidAmount(amount), formatFluidAmount(threshold))
                 end
                 local space = 16 - GetUtf8Len(label)
                 lineLabel = lineLabel .. label .. string.rep(" ", space > 0 and space or 0)
-                lineRatio = lineRatio .. string.format("%-16s", ratioStr)
+                lineValue = lineValue .. string.format("%-16s", valueStr)
             end
             print(lineLabel)
-            print(lineRatio)
+            print(lineValue)
         end
     end
     print("----------------------------------------------")
@@ -406,42 +392,43 @@ local function onInterrupted()
 end
 
 local function main()
+    -- 优化：不再强制退出，仅警告并继续运行
     if not me then
-        print("错误：未找到 ME 接口")
-        os.exit()
+        print("警告：未找到 ME 接口，流体监控将不可用")
     end
     if not glasses then
-        print("错误：未找到 AR 眼镜")
-        os.exit()
+        print("警告：未找到 AR 眼镜，眼镜显示将不可用")
     end
 
-    glassesSetup()
+    -- 如果存在眼镜则初始化，否则跳过
+    if glasses then
+        glassesSetup()
+    end
+
     term.clear()
     print("===== 太空电梯流体监控与维持系统启动 =====")
     print(string.format("AR 眼镜刷新间隔: %ds, 维持检查间隔: %ds", updateInterval, CHECK_INTERVAL))
     print("按 Ctrl+C 退出")
     print("==================================")
-    os.sleep(1)  -- 让用户看到启动信息
+    os.sleep(1)
 
     event.listen("interrupted", onInterrupted)
 
     local lastStatus = nil
     lastCheckTime = os.time()
-    -- 立即执行一次检查以显示初始状态
-    performMaintenance()
+    performMaintenance()  -- 立即显示初始状态
     lastCheckTime = os.time()
 
     while doContinue do
-        -- 更新眼镜（每秒）
-        updateGlasses()
-
-        -- 检测 ME 连接状态变化（仅记录，无需打印，仪表板会反映）
-        if meConnected ~= lastStatus then
-            lastStatus = meConnected
-            -- 可选择在仪表板中体现，但我们不额外打印
+        -- 若眼镜存在则更新，否则跳过
+        if glasses then
+            updateGlasses()
         end
 
-        -- 定期执行维持检查（每30秒）
+        if meConnected ~= lastStatus then
+            lastStatus = meConnected
+        end
+
         local now = os.time()
         if now - lastCheckTime >= CHECK_INTERVAL then
             performMaintenance()
