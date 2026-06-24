@@ -5,6 +5,8 @@
     2. 每60秒检查一次，若某流体低于阈值，自动调整所有太空钻机参数（仅在目标变化时调整）。
     3. 自动发现钻机。
     4. 终端以仪表板形式显示当前状态，展示每个流体的实际库存与阈值。
+    5. 所有流体充足且无持续目标时自动关闭钻机。
+    6. 变化率基于实际时间差计算，更准确。
 ]]
 
 local component = require("component")
@@ -64,11 +66,12 @@ local meConnected = false
 local statusKey = "me_status"
 local machineKey = "machine_count"
 local texts = {}
-local lastAmounts = {}
+local lastAmounts = {}          -- 存储上次的 amount
+local lastUpdateTimes = {}      -- 存储上次更新的 computer.uptime()
 local doContinue = true
 local lastGlassesTime = 0
 local lastCheckTime = 0
-local lastTargetFluid = nil   -- 记录上一次调整的目标流体
+local lastTargetFluid = nil     -- 记录上一次调整的目标流体
 
 local PROCESSED_FLUIDS = {}
 local gt_machines = {}
@@ -170,7 +173,8 @@ local function glassesSetup()
     end
 end
 
-local function updateGlasses()
+-- 修改：接收当前时间 now，用于精确计算变化率
+local function updateGlasses(now)
     if not glasses then return end
     local statusText = meConnected and "ME: 在线" or "ME: 离线"
     local statusColor = meConnected and {85, 255, 85} or {255, 85, 85}
@@ -184,9 +188,24 @@ local function updateGlasses()
     for _, fluid in ipairs(PROCESSED_FLUIDS) do
         local amount = getFluidAmount(fluid.name)
         local key = "fluid_" .. fluid.name
-        local last = lastAmounts[fluid.name] or amount
-        local diff = (amount - last) / glassesInterval
-        lastAmounts[fluid.name] = amount
+
+        -- 获取上次记录的值和时间
+        local lastAmount = lastAmounts[fluid.name]
+        local lastTime = lastUpdateTimes[fluid.name]
+        local diff = 0
+        if amount ~= nil and lastAmount ~= nil and lastTime ~= nil then
+            local timeDiff = now - lastTime
+            if timeDiff > 0 then
+                diff = (amount - lastAmount) / timeDiff
+            end
+        end
+
+        -- 更新记录（即使 amount 为 nil 也不更新，保持上次值用于后续？但为简单，我们仅当 amount 不为 nil 时更新）
+        if amount ~= nil then
+            lastAmounts[fluid.name] = amount
+            lastUpdateTimes[fluid.name] = now
+        end
+
         local rateText = formatRate(diff)
         local text = string.format("%s: %s mB%s", fluid.display, formatFluidAmount(amount), rateText)
 
@@ -249,6 +268,19 @@ local function adjustAllMachines(param1, param2)
         end
     end
     return successCount
+end
+
+-- 新增：关闭所有钻机
+local function shutdownAllMachines()
+    local count = 0
+    for _, machine in ipairs(gt_machines) do
+        if safelyStopMachine(machine) then
+            count = count + 1
+        else
+            print("关闭机器失败")
+        end
+    end
+    return count
 end
 
 -- ==================== 维持逻辑 ====================
@@ -343,8 +375,8 @@ local function performMaintenance()
     end
 
     if targetChanged then
-        -- 目标变化，执行调整
         if target then
+            -- 有目标：调整钻机参数并启动
             if target.threshold == -1 then
                 adjustmentMsg = string.format("所有常规流体充足，切换至持续获取 %s", target.display)
             else
@@ -358,17 +390,20 @@ local function performMaintenance()
             else
                 adjustmentMsg = adjustmentMsg .. " | 所有机器参数调整失败"
             end
+            lastTargetFluid = target
         else
-            -- 无目标（所有流体充足且无持续获取目标）
-            adjustmentMsg = "所有流体充足，无目标（机器保持当前状态）"
+            -- 无目标：所有流体充足且无持续目标，关闭所有钻机
+            adjustmentMsg = "所有流体充足，无目标，正在关闭所有钻机"
+            local shutDownCount = shutdownAllMachines()
+            adjustmentMsg = adjustmentMsg .. string.format(" | 已关闭 %d 台机器", shutDownCount)
+            lastTargetFluid = nil
         end
-        lastTargetFluid = target   -- 更新记录
     else
         -- 目标未变化，不执行任何操作
         if target then
             adjustmentMsg = string.format("目标未变化，保持当前设置（%s）", target.display)
         else
-            adjustmentMsg = "目标未变化，所有流体充足"
+            adjustmentMsg = "目标未变化，所有流体充足且已关闭钻机"
         end
     end
 
@@ -458,9 +493,9 @@ local function main()
 
         local now = computer.uptime()
 
-        -- 眼镜更新（独立计时）
+        -- 眼镜更新（独立计时），传递当前时间 now
         if glasses and now - lastGlassesTime >= glassesInterval then
-            updateGlasses()
+            updateGlasses(now)
             lastGlassesTime = now
         end
 
