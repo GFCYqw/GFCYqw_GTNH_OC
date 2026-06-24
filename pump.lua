@@ -6,11 +6,13 @@
     3. 自动发现钻机。
     4. 终端以仪表板形式显示当前状态，展示每个流体的实际库存与阈值。
     5. 所有流体充足且无持续目标时自动关闭钻机。
-    6. 变化率基于固定1秒循环计数器计算。
+    6. 变化率基于实际时间差（computer.uptime）计算。
+    7. 终端显示运行时间（调试用）。
 ]]
 
 local component = require("component")
 local event = require("event")
+local computer = require("computer")   -- 重新引入
 local os = require("os")
 local term = require("term")
 
@@ -32,8 +34,8 @@ local textScale = 1
 local offsetX = 3
 local offsetY = 15
 local lineSpacing = 1
-local glassesInterval = 3          -- 眼镜刷新间隔（秒）
-local checkInterval = 60           -- 维持检查间隔（秒）
+local glassesInterval = 2          -- 眼镜刷新间隔（秒）
+local checkInterval = 20           -- 维持检查间隔（秒）
 
 -- 流体配置：{注册名, 阈值(mB), 行星参数, 气体参数, 显示名}
 local FLUID_CONFIGS = {
@@ -66,11 +68,12 @@ local statusKey = "me_status"
 local machineKey = "machine_count"
 local texts = {}
 local lastAmounts = {}          -- 存储上次的 amount
-local lastUpdateTimes = {}      -- 存储上次更新的计数器值
+local lastUpdateTimes = {}      -- 存储上次更新的 computer.uptime()
 local doContinue = true
-local lastGlassesTime = 0       -- 计数器值
-local lastCheckTime = 0         -- 计数器值
+local lastGlassesTime = 0
+local lastCheckTime = 0
 local lastTargetFluid = nil
+local startTime = 0             -- 脚本启动时间
 
 local PROCESSED_FLUIDS = {}
 local gt_machines = {}
@@ -114,6 +117,25 @@ local function getFluidAmount(fluidName)
         end
     end
     return 0
+end
+
+-- ==================== 时间格式化 ====================
+local function formatUptime(seconds)
+    local days = math.floor(seconds / 86400)
+    seconds = seconds % 86400
+    local hours = math.floor(seconds / 3600)
+    seconds = seconds % 3600
+    local mins = math.floor(seconds / 60)
+    local secs = math.floor(seconds % 60)
+    if days > 0 then
+        return string.format("%d天%02d时%02d分%02d秒", days, hours, mins, secs)
+    elseif hours > 0 then
+        return string.format("%02d时%02d分%02d秒", hours, mins, secs)
+    elseif mins > 0 then
+        return string.format("%02d分%02d秒", mins, secs)
+    else
+        return string.format("%02d秒", secs)
+    end
 end
 
 -- ==================== 眼镜显示 ====================
@@ -172,8 +194,7 @@ local function glassesSetup()
     end
 end
 
--- 接收当前计数器值 counter
-local function updateGlasses(counter)
+local function updateGlasses(now)
     if not glasses then return end
     local statusText = meConnected and "ME: 在线" or "ME: 离线"
     local statusColor = meConnected and {85, 255, 85} or {255, 85, 85}
@@ -192,16 +213,15 @@ local function updateGlasses(counter)
         local lastTime = lastUpdateTimes[fluid.name]
         local diff = 0
         if amount ~= nil and lastAmount ~= nil and lastTime ~= nil then
-            local timeDiff = counter - lastTime
+            local timeDiff = now - lastTime
             if timeDiff > 0 then
                 diff = (amount - lastAmount) / timeDiff
             end
         end
 
-        -- 更新记录（仅当 amount 有效）
         if amount ~= nil then
             lastAmounts[fluid.name] = amount
-            lastUpdateTimes[fluid.name] = counter
+            lastUpdateTimes[fluid.name] = now
         end
 
         local rateText = formatRate(diff)
@@ -302,7 +322,11 @@ end
 local function drawDashboard(target, adjustmentMsg)
     term.clear()
     print("===================  太空电梯流体监控与维持系统  ===================")
-    print(string.format("ME网络: %s  |  钻机数: %d 台  |  AR眼镜: %s", 
+    -- 显示运行时间（debug）
+    local uptime = computer.uptime()
+    local elapsed = uptime - startTime
+    print(string.format("运行时间: %s", formatUptime(elapsed)))
+    print(string.format("ME网络: %s  |  钻机数: %d 台  |  AR眼镜: %s",
           meConnected and "在线" or "离线", #gt_machines, glasses and "在线" or "离线"))
     print("--------------------------------------------------------------------")
 
@@ -474,31 +498,32 @@ local function main()
     event.listen("interrupted", onInterrupted)
 
     local lastStatus = nil
-    local counter = 0                     -- 自增计数器
-    lastGlassesTime = 0
-    lastCheckTime = 0
-    performMaintenance()                 -- 首次显示
-    lastCheckTime = counter              -- 记录此次执行的时间（0）
+    startTime = computer.uptime()          -- 记录启动时间
+    lastGlassesTime = startTime
+    lastCheckTime = startTime
+    performMaintenance()                  -- 首次显示
+    lastCheckTime = computer.uptime()     -- 更新执行时间
 
     while doContinue do
         if meConnected ~= lastStatus then
             lastStatus = meConnected
         end
 
+        local now = computer.uptime()
+
         -- 眼镜更新
-        if glasses and counter - lastGlassesTime >= glassesInterval then
-            updateGlasses(counter)
-            lastGlassesTime = counter
+        if glasses and now - lastGlassesTime >= glassesInterval then
+            updateGlasses(now)
+            lastGlassesTime = now
         end
 
         -- 维持检查
-        if counter - lastCheckTime >= checkInterval then
+        if now - lastCheckTime >= checkInterval then
             performMaintenance()
-            lastCheckTime = counter
+            lastCheckTime = now
         end
 
         os.sleep(1)
-        counter = counter + 1             -- 每循环固定增加1秒
     end
 
     event.ignore("interrupted", onInterrupted)
