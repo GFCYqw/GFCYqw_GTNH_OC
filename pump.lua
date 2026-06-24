@@ -1,10 +1,10 @@
 --[[
   综合脚本：AR眼镜流体监控 + 自动维持（太空钻机生产）
   功能：
-    1. 在AR眼镜上实时显示流体存量、变化率、阈值警告。
+    1. AR眼镜实时显示流体存量、变化率、阈值警告。
     2. 每30秒检查一次，若某流体低于阈值，自动调整所有太空钻机参数。
-    3. 自动发现钻机（无需手动配置地址）。
-    4. 终端显示当前目标、库存比例等精简信息（已剔除重复的系统状态打印）。
+    3. 自动发现钻机。
+    4. 终端以仪表板形式显示当前状态（每30秒刷新）。
 ]]
 
 local component = require("component")
@@ -14,8 +14,7 @@ local event = require("event")
 local os = require("os")
 local term = require("term")
 
--- ==================== 配置区域 ====================
-
+-- ==================== 配置 ====================
 local textScale = 1
 local offsetX = 3
 local offsetY = 15
@@ -23,8 +22,7 @@ local lineSpacing = 1
 local updateInterval = 1
 local CHECK_INTERVAL = 30
 
--- 流体配置：{注册名, 阈值(mB), 行星参数, 气体参数, 显示名(可选)}
--- 阈值支持 k/m/g/t 后缀，-1 表示“持续获取”
+-- 流体配置：{注册名, 阈值(mB), 行星参数, 气体参数, 显示名}
 local FLUID_CONFIGS = {
     {"liquidair", "1g", 8, 2, "液态空气" },
     {"helium", "2g", 5, 4, "氦" },
@@ -40,10 +38,16 @@ local FLUID_CONFIGS = {
     {"radon", "100m", 8, 6, "氡" },
     {"krypton", "10m", 5, 8, "氪" },
     {"xenon", -1, 6, 4, "氙" },
+    -- {"fluorine", "4g", 7, 2, "氟" },
+    -- {"sulfuricacid", "1g", 4, 1, "硫酸" },
+    -- {"ethylene", "1g", 6, 5, "乙烯" },
+    -- {"molten.iron", "100m", 4, 2, "熔融铁" },
+    -- {"molten.copper", "100m", 8, 3, "熔融铜" },
+    -- {"molten.tin", "100m", 8, 7, "熔融锡" },
+    -- {"molten.lead", "100m", 4, 5, "熔融铅" }
 }
 
 -- ==================== 内部状态 ====================
-
 local meConnected = false
 local statusKey = "me_status"
 local machineKey = "machine_count"
@@ -51,12 +55,12 @@ local texts = {}
 local lastAmounts = {}
 local doContinue = true
 local lastCheckTime = 0
+local adjustmentLog = ""    -- 记录最后一次调整动作
 
 local PROCESSED_FLUIDS = {}
 local gt_machines = {}
 
 -- ==================== 辅助函数 ====================
-
 local function parseNumberWithSuffix(value)
     if type(value) == "number" then return value end
     if type(value) ~= "string" then error("无效的数字格式: " .. tostring(value)) end
@@ -113,7 +117,6 @@ local function getFluidRatios()
 end
 
 -- ==================== 眼镜显示 ====================
-
 local function formatFluidAmount(amount)
     if amount == nil then return "断连" end
     if amount >= 1e12 then return string.format("%.1fT", amount / 1e12)
@@ -204,7 +207,6 @@ local function updateGlasses()
 end
 
 -- ==================== 钻机控制 ====================
-
 local function safelyStopMachine(machine)
     if machine.isMachineActive() then
         machine.setWorkAllowed(false)
@@ -246,16 +248,12 @@ local function adjustAllMachines(param1, param2)
     for i, machine in ipairs(gt_machines) do
         if adjustMachineParameters(machine, param1, param2) then
             successCount = successCount + 1
-            print(string.format("机器 %d 参数调整成功", i))
-        else
-            print(string.format("机器 %d 参数调整失败", i))
         end
     end
     return successCount
 end
 
 -- ==================== 维持逻辑 ====================
-
 local function findFluidToRefill()
     for _, fluid in ipairs(PROCESSED_FLUIDS) do
         if fluid.threshold ~= -1 then
@@ -273,83 +271,93 @@ local function findFluidToRefill()
     return nil
 end
 
--- ==================== 精简终端输出 ====================
+-- ==================== 终端仪表板 ====================
+local function drawDashboard(target, adjustmentMsg)
+    term.clear()
+    -- 标题和时间
+    local timeStr = os.date("%Y-%m-%d %H:%M:%S")
+    print(string.format("===== 流体监控与维持系统  [%s] =====", timeStr))
+    print(string.format("ME网络: %s  |  钻机数: %d 台", meConnected and "在线" or "离线", #gt_machines))
+    print("----------------------------------------------")
 
-local function printFluidStatus()
-    if #PROCESSED_FLUIDS == 0 then return end
-    local ratios = getFluidRatios()
-    local total = #PROCESSED_FLUIDS
-    print("\n【流体库存状态】")
-    for i = 1, total, 7 do
-        local lineLabel = "  "
-        local lineRatio = "  "
-        for j = i, math.min(i+6, total) do
-            local fluid = PROCESSED_FLUIDS[j]
-            local label = fluid.display
-            local ratio = ratios[fluid.name]
-            local ratioStr
-            if ratio == nil then
-                ratioStr = "断连"
-            elseif ratio >= 1 then
-                ratioStr = "充足"
-            else
-                ratioStr = string.format("%.1f%%", ratio * 100)
+    -- 流体库存表格
+    if #PROCESSED_FLUIDS > 0 then
+        local ratios = getFluidRatios()
+        for i = 1, #PROCESSED_FLUIDS, 7 do
+            local lineLabel = "  "
+            local lineRatio = "  "
+            for j = i, math.min(i+6, #PROCESSED_FLUIDS) do
+                local fluid = PROCESSED_FLUIDS[j]
+                local label = fluid.display
+                local ratio = ratios[fluid.name]
+                local ratioStr
+                if ratio == nil then
+                    ratioStr = "断连"
+                elseif ratio >= 1 then
+                    ratioStr = "充足"
+                else
+                    ratioStr = string.format("%.1f%%", ratio * 100)
+                end
+                local space = 16 - GetUtf8Len(label)
+                lineLabel = lineLabel .. label .. string.rep(" ", space > 0 and space or 0)
+                lineRatio = lineRatio .. string.format("%-16s", ratioStr)
             end
-            local space = 16 - GetUtf8Len(label)
-            lineLabel = lineLabel .. label .. string.rep(" ", space > 0 and space or 0)
-            lineRatio = lineRatio .. string.format("%-16s", ratioStr)
+            print(lineLabel)
+            print(lineRatio)
         end
-        print(lineLabel)
-        print(lineRatio)
     end
-end
+    print("----------------------------------------------")
 
--- 只显示当前目标，不再重复输出 ME 状态、钻机数量、下次检查时间
-local function printTarget(target)
+    -- 当前目标
     if target then
         print(string.format("【当前目标】%s (行星=%d, 气体=%d)", target.display, target.param1, target.param2))
     else
         print("【当前目标】无（所有流体充足）")
     end
+
+    -- 调整动作信息
+    if adjustmentMsg and adjustmentMsg ~= "" then
+        print("【操作日志】" .. adjustmentMsg)
+    end
+    print("==============================================")
 end
 
 -- ==================== 执行维持 ====================
-
 local function performMaintenance()
     if #gt_machines == 0 then
-        print("\n警告：没有可用的太空钻机，维持功能跳过")
+        drawDashboard(nil, "警告：没有可用的太空钻机，维持功能跳过")
         return
     end
     if not meConnected then
-        print("\nME 离线，跳过维持检查")
+        drawDashboard(nil, "ME 离线，跳过维持检查")
         return
     end
 
-    printFluidStatus()
     local target = findFluidToRefill()
-    printTarget(target)
-
+    local adjustmentMsg = ""
+    
     if target then
         if target.threshold == -1 then
-            print(string.format("\n所有常规流体充足，开始持续获取 %s", target.display))
+            adjustmentMsg = string.format("所有常规流体充足，开始持续获取 %s", target.display)
         else
-            print(string.format("\n检测到 %s 低于阈值，开始补充", target.display))
+            adjustmentMsg = string.format("检测到 %s 低于阈值，开始补充", target.display)
         end
         local successCount = adjustAllMachines(target.param1, target.param2)
         if successCount > 0 then
-            print(string.format("已调整 %d 台机器%s", successCount,
-                target.threshold == -1 and "持续获取 " .. target.display or "补充 " .. target.display))
+            adjustmentMsg = adjustmentMsg .. string.format(" | 已调整 %d 台机器 %s",
+                successCount,
+                target.threshold == -1 and "持续获取" or "补充")
         else
-            print("所有机器参数调整失败")
+            adjustmentMsg = adjustmentMsg .. " | 所有机器参数调整失败"
         end
     else
-        print("\n所有流体库存充足，无需调整")
+        adjustmentMsg = "所有流体库存充足，无需调整"
     end
-    print("==================================\n")
+
+    drawDashboard(target, adjustmentMsg)
 end
 
 -- ==================== 初始化 ====================
-
 for _, config in ipairs(FLUID_CONFIGS) do
     local name = config[1]
     local thresholdRaw = config[2]
@@ -394,7 +402,6 @@ else
 end
 
 -- ==================== 主循环 ====================
-
 local function onInterrupted()
     doContinue = false
 end
@@ -415,24 +422,27 @@ local function main()
     print(string.format("眼镜刷新间隔: %ds, 维持检查间隔: %ds", updateInterval, CHECK_INTERVAL))
     print("按 Ctrl+C 退出")
     print("==================================")
+    os.sleep(1)  -- 让用户看到启动信息
 
     event.listen("interrupted", onInterrupted)
 
     local lastStatus = nil
     lastCheckTime = os.time()
+    -- 立即执行一次检查以显示初始状态
+    performMaintenance()
+    lastCheckTime = os.time()
 
     while doContinue do
+        -- 更新眼镜（每秒）
         updateGlasses()
 
+        -- 检测 ME 连接状态变化（仅记录，无需打印，仪表板会反映）
         if meConnected ~= lastStatus then
-            if meConnected then
-                print("ME 接口已连接")
-            else
-                print("警告：ME 接口断开")
-            end
             lastStatus = meConnected
+            -- 可选择在仪表板中体现，但我们不额外打印
         end
 
+        -- 定期执行维持检查（每30秒）
         local now = os.time()
         if now - lastCheckTime >= CHECK_INTERVAL then
             performMaintenance()
