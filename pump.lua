@@ -2,9 +2,10 @@
   综合脚本：AR眼镜流体监控 + 自动维持（太空钻机生产）
   功能：
     1. AR眼镜实时显示流体存量、变化率、阈值警告。
-    2. 每30秒检查一次，若某流体低于阈值，自动调整所有太空钻机参数。
+    2. 每 CHECK_INTERVAL 秒检查一次，若某流体低于阈值，自动调整所有太空钻机参数。
     3. 自动发现钻机。
     4. 终端以仪表板形式显示当前状态，展示每个流体的实际库存与阈值。
+    5. AR眼镜可配置显示全部流体或仅当前目标。
 ]]
 
 local component = require("component")
@@ -19,8 +20,11 @@ local textScale = 1
 local offsetX = 3
 local offsetY = 15
 local lineSpacing = 1
-local updateInterval = 10
-local CHECK_INTERVAL = 60
+local updateInterval = 10          -- 眼镜刷新间隔（秒）
+local CHECK_INTERVAL = 60          -- 维持检查间隔（秒）
+
+-- AR 眼镜显示模式：true=显示所有监控流体，false=仅显示当前目标流体
+local glassesShowAll = false
 
 -- 流体配置：{注册名, 阈值(mB), 行星参数, 气体参数, 显示名}
 local FLUID_CONFIGS = {
@@ -156,8 +160,11 @@ local function glassesSetup()
     end
 end
 
+-- ==================== 修改：支持仅显示目标流体 ====================
 local function updateGlasses()
     if not glasses then return end
+
+    -- 更新状态行（ME 和钻机数）
     local statusText = meConnected and "ME: 在线" or "ME: 离线"
     local statusColor = meConnected and {85, 255, 85} or {255, 85, 85}
     setShadowText(statusKey, statusText, table.unpack(statusColor))
@@ -167,26 +174,52 @@ local function updateGlasses()
     local machineColor = machineCount > 0 and {85, 255, 85} or {255, 85, 85}
     setShadowText(machineKey, machineText, table.unpack(machineColor))
 
-    for _, fluid in ipairs(PROCESSED_FLUIDS) do
-        local amount = getFluidAmount(fluid.name)
-        local key = "fluid_" .. fluid.name
-        local last = lastAmounts[fluid.name] or amount
-        local diff = (amount - last) / updateInterval
-        lastAmounts[fluid.name] = amount
-        local rateText = formatRate(diff)
-        local text = string.format("%s: %s mB%s", fluid.display, formatFluidAmount(amount), rateText)
-
-        local r, g, b = 255, 255, 255
-        if amount == nil then
-            r, g, b = 128, 128, 128
-        elseif fluid.threshold and fluid.threshold > 0 and amount < fluid.threshold then
-            r, g, b = 255, 85, 85
+    -- 确定要显示的流体列表
+    local displayList
+    if glassesShowAll then
+        displayList = PROCESSED_FLUIDS
+    else
+        local target = findFluidToRefill()
+        if target then
+            displayList = {target}
         else
-            if diff > 0 then r, g, b = 85, 255, 85
-            elseif diff < 0 then r, g, b = 255, 85, 85
-            else r, g, b = 255, 255, 255 end
+            displayList = {}
         end
-        setShadowText(key, text, r, g, b)
+    end
+
+    -- 构建快速查找表
+    local displayMap = {}
+    for _, f in ipairs(displayList) do
+        displayMap[f.name] = true
+    end
+
+    -- 遍历所有流体，根据是否在 displayMap 中决定显示或清空
+    for _, fluid in ipairs(PROCESSED_FLUIDS) do
+        local key = "fluid_" .. fluid.name
+        if displayMap[fluid.name] then
+            -- 显示该流体
+            local amount = getFluidAmount(fluid.name)
+            local last = lastAmounts[fluid.name] or amount
+            local diff = (amount and last) and ((amount - last) / updateInterval) or 0
+            lastAmounts[fluid.name] = amount
+            local rateText = formatRate(diff)
+            local text = string.format("%s: %s mB%s", fluid.display, formatFluidAmount(amount), rateText)
+
+            local r, g, b = 255, 255, 255
+            if amount == nil then
+                r, g, b = 128, 128, 128
+            elseif fluid.threshold and fluid.threshold > 0 and amount < fluid.threshold then
+                r, g, b = 255, 85, 85
+            else
+                if diff > 0 then r, g, b = 85, 255, 85
+                elseif diff < 0 then r, g, b = 255, 85, 85
+                else r, g, b = 255, 255, 255 end
+            end
+            setShadowText(key, text, r, g, b)
+        else
+            -- 不显示：清空文本（灰色）
+            setShadowText(key, "", 128, 128, 128)
+        end
     end
 end
 
@@ -255,10 +288,9 @@ local function findFluidToRefill()
     return nil
 end
 
--- ==================== 终端仪表板（显示数量/阈值） ====================
+-- ==================== 终端仪表板 ====================
 local function drawDashboard(target, adjustmentMsg)
     term.clear()
-    -- 标题与状态行（添加 AR 眼镜状态 + 时间）
     local glassesStatus = glasses and "可用" or "不可用"
     local timeStr = os.date("%Y-%m-%d %H:%M:%S")
     print(string.format("========== 太空电梯流体监控与维持系统 [%s] ==========", timeStr))
@@ -266,7 +298,6 @@ local function drawDashboard(target, adjustmentMsg)
           meConnected and "在线" or "离线", #gt_machines, glassesStatus))
     print("--------------------------------------------------------------")
 
-    -- 流体库存显示：名称 和 数量/阈值（每行4个，即按4个一组）
     if #PROCESSED_FLUIDS > 0 then
         for i = 1, #PROCESSED_FLUIDS, 4 do
             local lineLabel = "  "
@@ -294,14 +325,12 @@ local function drawDashboard(target, adjustmentMsg)
     end
     print("--------------------------------------------------------------")
 
-    -- 当前目标
     if target then
         print(string.format("【当前目标】%s (行星=%d, 气体=%d)", target.display, target.param1, target.param2))
     else
         print("【当前目标】无（所有流体充足）")
     end
 
-    -- 调整动作信息
     if adjustmentMsg and adjustmentMsg ~= "" then
         print("【操作日志】" .. adjustmentMsg)
     end
@@ -393,7 +422,6 @@ local function onInterrupted()
 end
 
 local function main()
-    -- 优化：不再强制退出，仅警告并继续运行
     if not me then
         print("警告：未找到 ME 接口，流体监控将不可用")
     end
@@ -401,7 +429,6 @@ local function main()
         print("警告：未找到 AR 眼镜，眼镜显示将不可用")
     end
 
-    -- 如果存在眼镜则初始化，否则跳过
     if glasses then
         glassesSetup()
     end
@@ -409,6 +436,7 @@ local function main()
     term.clear()
     print("===== 太空电梯流体监控与维持系统启动 =====")
     print(string.format("AR 眼镜刷新间隔: %ds, 维持检查间隔: %ds", updateInterval, CHECK_INTERVAL))
+    print("眼镜显示模式: " .. (glassesShowAll and "全部流体" or "仅当前目标"))
     print("按 Ctrl+C 退出")
     print("==================================")
     os.sleep(1)
@@ -417,11 +445,10 @@ local function main()
 
     local lastStatus = nil
     lastCheckTime = os.time()
-    performMaintenance()  -- 立即显示初始状态
+    performMaintenance()
     lastCheckTime = os.time()
 
     while doContinue do
-        -- 若眼镜存在则更新，否则跳过
         if glasses then
             updateGlasses()
         end
@@ -440,7 +467,7 @@ local function main()
     end
 
     event.ignore("interrupted", onInterrupted)
-    print("系统已停止")
+    print("程序手动中断")
 end
 
 main()
