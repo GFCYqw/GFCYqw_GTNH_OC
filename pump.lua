@@ -2,7 +2,7 @@
   综合脚本：AR眼镜流体监控 + 自动维持（太空钻机生产）
   功能：
     1. AR眼镜实时显示流体存量、变化率、阈值警告。
-    2. 每 CHECK_INTERVAL 秒检查一次，若某流体低于阈值，自动调整所有太空钻机参数。
+    2. 每60秒检查一次，若某流体低于阈值，自动调整所有太空钻机参数。
     3. 自动发现钻机。
     4. 终端以仪表板形式显示当前状态，展示每个流体的实际库存与阈值。
     5. AR眼镜可配置显示全部流体或仅当前目标。
@@ -160,11 +160,29 @@ local function glassesSetup()
     end
 end
 
--- ==================== 修改：支持仅显示目标流体 ====================
+-- ==================== 维持逻辑（提前定义，供 updateGlasses 调用） ====================
+local function findFluidToRefill()
+    for _, fluid in ipairs(PROCESSED_FLUIDS) do
+        if fluid.threshold ~= -1 then
+            local amount = getFluidAmount(fluid.name)
+            if amount ~= nil and amount < fluid.threshold then
+                return fluid
+            end
+        end
+    end
+    for _, fluid in ipairs(PROCESSED_FLUIDS) do
+        if fluid.threshold == -1 then
+            return fluid
+        end
+    end
+    return nil
+end
+
+-- ==================== 眼镜更新（调用 findFluidToRefill） ====================
 local function updateGlasses()
     if not glasses then return end
 
-    -- 更新状态行（ME 和钻机数）
+    -- 更新状态行
     local statusText = meConnected and "ME: 在线" or "ME: 离线"
     local statusColor = meConnected and {85, 255, 85} or {255, 85, 85}
     setShadowText(statusKey, statusText, table.unpack(statusColor))
@@ -187,17 +205,16 @@ local function updateGlasses()
         end
     end
 
-    -- 构建快速查找表
+    -- 构建查找表
     local displayMap = {}
     for _, f in ipairs(displayList) do
         displayMap[f.name] = true
     end
 
-    -- 遍历所有流体，根据是否在 displayMap 中决定显示或清空
+    -- 遍历所有流体
     for _, fluid in ipairs(PROCESSED_FLUIDS) do
         local key = "fluid_" .. fluid.name
         if displayMap[fluid.name] then
-            -- 显示该流体
             local amount = getFluidAmount(fluid.name)
             local last = lastAmounts[fluid.name] or amount
             local diff = (amount and last) and ((amount - last) / updateInterval) or 0
@@ -217,7 +234,6 @@ local function updateGlasses()
             end
             setShadowText(key, text, r, g, b)
         else
-            -- 不显示：清空文本（灰色）
             setShadowText(key, "", 128, 128, 128)
         end
     end
@@ -268,24 +284,6 @@ local function adjustAllMachines(param1, param2)
         end
     end
     return successCount
-end
-
--- ==================== 维持逻辑 ====================
-local function findFluidToRefill()
-    for _, fluid in ipairs(PROCESSED_FLUIDS) do
-        if fluid.threshold ~= -1 then
-            local amount = getFluidAmount(fluid.name)
-            if amount ~= nil and amount < fluid.threshold then
-                return fluid
-            end
-        end
-    end
-    for _, fluid in ipairs(PROCESSED_FLUIDS) do
-        if fluid.threshold == -1 then
-            return fluid
-        end
-    end
-    return nil
 end
 
 -- ==================== 终端仪表板 ====================
@@ -434,7 +432,7 @@ local function main()
     end
 
     term.clear()
-    print("===== 太空电梯流体监控与维持系统启动 =====")
+    print("===== 太空电梯流体监控与维持系统 Version 1.0 By GFCYqw=====")
     print(string.format("AR 眼镜刷新间隔: %ds, 维持检查间隔: %ds", updateInterval, CHECK_INTERVAL))
     print("眼镜显示模式: " .. (glassesShowAll and "全部流体" or "仅当前目标"))
     print("按 Ctrl+C 退出")
@@ -467,7 +465,7 @@ local function main()
     end
 
     event.ignore("interrupted", onInterrupted)
-    print("程序手动中断")
+    print("系统已停止")
 end
 
 main()
