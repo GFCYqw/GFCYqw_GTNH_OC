@@ -2,25 +2,36 @@
   综合脚本：AR眼镜流体监控 + 自动维持（太空钻机生产）
   功能：
     1. AR眼镜实时显示流体存量、变化率、阈值警告。
-    2. 每30秒检查一次，若某流体低于阈值，自动调整所有太空钻机参数。
+    2. 每60秒检查一次，若某流体低于阈值，自动调整所有太空钻机参数。
     3. 自动发现钻机。
     4. 终端以仪表板形式显示当前状态，展示每个流体的实际库存与阈值。
 ]]
 
 local component = require("component")
-local glasses = component.glasses
-local me = component.me_interface
 local event = require("event")
 local os = require("os")
 local term = require("term")
+
+-- ==================== 安全获取组件（避免因组件缺失而报错） ====================
+local glasses = nil
+for address in component.list("glasses") do
+    glasses = component.proxy(address)
+    break
+end
+
+local me = nil
+for address in component.list("me_interface") do
+    me = component.proxy(address)
+    break
+end
 
 -- ==================== 配置 ====================
 local textScale = 1
 local offsetX = 3
 local offsetY = 15
 local lineSpacing = 1
-local updateInterval = 10
-local CHECK_INTERVAL = 60
+local updateInterval = 10          -- 眼镜刷新间隔（秒）
+local CHECK_INTERVAL = 60          -- 维持检查间隔（秒）
 
 -- 流体配置：{注册名, 阈值(mB), 行星参数, 气体参数, 显示名}
 local FLUID_CONFIGS = {
@@ -258,7 +269,6 @@ end
 -- ==================== 终端仪表板（显示数量/阈值） ====================
 local function drawDashboard(target, adjustmentMsg)
     term.clear()
-    -- 标题与状态行（添加 AR 眼镜状态 + 时间）
     local glassesStatus = glasses and "可用" or "不可用"
     local timeStr = os.date("%Y-%m-%d %H:%M:%S")
     print(string.format("========== 太空电梯流体监控与维持系统 [%s] ==========", timeStr))
@@ -266,7 +276,6 @@ local function drawDashboard(target, adjustmentMsg)
           meConnected and "在线" or "离线", #gt_machines, glassesStatus))
     print("--------------------------------------------------------------")
 
-    -- 流体库存显示：名称 和 数量/阈值（每行4个，即按4个一组）
     if #PROCESSED_FLUIDS > 0 then
         for i = 1, #PROCESSED_FLUIDS, 4 do
             local lineLabel = "  "
@@ -294,14 +303,12 @@ local function drawDashboard(target, adjustmentMsg)
     end
     print("--------------------------------------------------------------")
 
-    -- 当前目标
     if target then
         print(string.format("【当前目标】%s (行星=%d, 气体=%d)", target.display, target.param1, target.param2))
     else
         print("【当前目标】无（所有流体充足）")
     end
 
-    -- 调整动作信息
     if adjustmentMsg and adjustmentMsg ~= "" then
         print("【操作日志】" .. adjustmentMsg)
     end
@@ -393,7 +400,6 @@ local function onInterrupted()
 end
 
 local function main()
-    -- 优化：不再强制退出，仅警告并继续运行
     if not me then
         print("警告：未找到 ME 接口，流体监控将不可用")
     end
@@ -401,7 +407,6 @@ local function main()
         print("警告：未找到 AR 眼镜，眼镜显示将不可用")
     end
 
-    -- 如果存在眼镜则初始化，否则跳过
     if glasses then
         glassesSetup()
     end
@@ -417,11 +422,10 @@ local function main()
 
     local lastStatus = nil
     lastCheckTime = os.time()
-    performMaintenance()  -- 立即显示初始状态
+    performMaintenance()
     lastCheckTime = os.time()
 
     while doContinue do
-        -- 若眼镜存在则更新，否则跳过
         if glasses then
             updateGlasses()
         end
