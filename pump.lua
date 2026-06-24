@@ -4,12 +4,12 @@
     1. AR眼镜实时显示流体存量、变化率、阈值警告。
     2. 每30秒检查一次，若某流体低于阈值，自动调整所有太空钻机参数。
     3. 自动发现钻机。
-    4. 终端以仪表板形式显示当前状态（每30秒刷新），展示每个流体的实际库存与阈值。
+    4. 终端以仪表板形式显示当前状态，展示每个流体的实际库存与阈值。
 ]]
 
 local component = require("component")
-local glasses = component.glasses      -- 可能为 nil
-local me = component.me_interface      -- 可能为 nil
+local glasses = component.glasses
+local me = component.me_interface
 local event = require("event")
 local os = require("os")
 local term = require("term")
@@ -19,12 +19,14 @@ local textScale = 1
 local offsetX = 3
 local offsetY = 15
 local lineSpacing = 1
-local updateInterval = 1
-local CHECK_INTERVAL = 30
+local updateInterval = 10
+local CHECK_INTERVAL = 60
 
 -- 流体配置：{注册名, 阈值(mB), 行星参数, 气体参数, 显示名}
 local FLUID_CONFIGS = {
     {"liquidair", "1g", 8, 2, "液态空气" },
+    {"fluorine", "4g", 7, 2, "氟" },
+    {"sulfuricacid", "1g", 4, 1, "硫酸" },
     {"helium", "2g", 5, 4, "氦" },
     {"oil", "1g", 4, 3, "石油" },
     {"ic2distilledwater", "1g", 8, 5, "蒸馏水" },
@@ -37,9 +39,7 @@ local FLUID_CONFIGS = {
     {"argon", "100m", 5, 7, "氩" },
     {"radon", "100m", 8, 6, "氡" },
     {"krypton", "10m", 5, 8, "氪" },
-    {"xenon", -1, 6, 4, "氙" },
-    -- {"fluorine", "4g", 7, 2, "氟" },
-    -- {"sulfuricacid", "1g", 4, 1, "硫酸" },
+    {"xenon", "2g", 6, 4, "氙" },
     -- {"ethylene", "1g", 6, 5, "乙烯" },
     -- {"molten.iron", "100m", 4, 2, "熔融铁" },
     -- {"molten.copper", "100m", 8, 3, "熔融铜" },
@@ -102,7 +102,7 @@ end
 
 -- ==================== 眼镜显示 ====================
 local function formatFluidAmount(amount)
-    if amount == nil then return "断连" end
+    if amount == nil then return "NaN" end
     if amount >= 1e12 then return string.format("%.1fT", amount / 1e12)
     elseif amount >= 1e9 then return string.format("%.1fG", amount / 1e9)
     elseif amount >= 1e6 then return string.format("%.1fM", amount / 1e6)
@@ -164,7 +164,7 @@ local function updateGlasses()
 
     local machineCount = #gt_machines
     local machineText = machineCount > 0 and ("钻机: " .. machineCount .. "台") or "钻机: 无"
-    local machineColor = machineCount > 0 and {255, 255, 255} or {128, 128, 128}
+    local machineColor = machineCount > 0 and {85, 255, 85} or {255, 85, 85}
     setShadowText(machineKey, machineText, table.unpack(machineColor))
 
     for _, fluid in ipairs(PROCESSED_FLUIDS) do
@@ -258,7 +258,6 @@ end
 -- ==================== 终端仪表板（显示数量/阈值） ====================
 local function drawDashboard(target, adjustmentMsg)
     term.clear()
-    print("drawDashboard called")  -- 调试
     -- 标题与状态行（添加 AR 眼镜状态 + 时间）
     local glassesStatus = glasses and "可用" or "不可用"
     local timeStr = os.date("%Y-%m-%d %H:%M:%S")
