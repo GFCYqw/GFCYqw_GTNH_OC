@@ -9,6 +9,7 @@
 
 local component = require("component")
 local event = require("event")
+local computer = require("computer")
 local os = require("os")
 local term = require("term")
 
@@ -271,10 +272,9 @@ end
 -- ==================== 终端仪表板 ====================
 local function drawDashboard(target, adjustmentMsg)
     term.clear()
-    local glassesStatus = glasses and "可用" or "不可用"
     print("===================  太空电梯流体监控与维持系统  ===================")
     print(string.format("ME网络: %s  |  钻机数: %d 台  |  AR眼镜: %s", 
-          meConnected and "在线" or "离线", #gt_machines, glassesStatus))
+          meConnected and "在线" or "离线", #gt_machines, glasses and "在线" or "离线"))
     print("--------------------------------------------------------------------")
 
     if #PROCESSED_FLUIDS > 0 then
@@ -438,7 +438,7 @@ local function main()
 
     term.clear()
     print("===== 太空电梯流体监控与维持系统 Version 1.2 By GFCYqw =====")
-    print(string.format("AR 眼镜刷新间隔: %ds, 维持检查间隔: %ds", glassesInterval * 100, checkInterval * 100))
+    print(string.format("AR 眼镜刷新间隔: %ds, 维持检查间隔: %ds", glassesInterval, checkInterval))
     print("按 Ctrl+C 退出")
     print("==================================")
     os.sleep(1)
@@ -446,26 +446,26 @@ local function main()
     event.listen("interrupted", onInterrupted)
 
     local lastStatus = nil
-    lastGlassesTime = os.time()
-    lastCheckTime = os.time()
+    lastGlassesTime = computer.uptime()
+    lastCheckTime = computer.uptime()
     performMaintenance()  -- 首次显示
-    lastCheckTime = os.time()
+    lastCheckTime = computer.uptime()
 
     while doContinue do
         if meConnected ~= lastStatus then
             lastStatus = meConnected
         end
 
-        local now = os.time()
+        local now = computer.uptime()
 
         -- 眼镜更新（独立计时）
-        if glasses and now - lastGlassesTime >= glassesInterval * 100 then
+        if glasses and now - lastGlassesTime >= glassesInterval then
             updateGlasses()
             lastGlassesTime = now
         end
 
         -- 维持检查（独立计时）
-        if now - lastCheckTime >= checkInterval * 100 then
+        if now - lastCheckTime >= checkInterval then
             performMaintenance()
             lastCheckTime = now
         end
