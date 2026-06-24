@@ -50,7 +50,7 @@ local FLUID_CONFIGS = {
     {"argon", "100m", 5, 7, "氩" },
     {"radon", "100m", 8, 6, "氡" },
     {"krypton", "10m", 5, 8, "氪" },
-    {"xenon", "2g", 6, 4, "氙" },
+    {"xenon", "100m", 6, 4, "氙" },
     -- {"ethylene", "1g", 6, 5, "乙烯" },
     -- {"molten.iron", "100m", 4, 2, "熔融铁" },
     -- {"molten.copper", "100m", 8, 3, "熔融铜" },
@@ -438,7 +438,7 @@ local function main()
 
     term.clear()
     print("===== 太空电梯流体监控与维持系统 Version 1.2 By GFCYqw =====")
-    print(string.format("AR 眼镜刷新间隔: %ds, 维持检查间隔: %ds", glassesInterval, checkInterval))
+    print(string.format("AR 眼镜刷新间隔: %ds, 维持检查间隔: %ds", glassesInterval * 100, checkInterval * 100))
     print("按 Ctrl+C 退出")
     print("==================================")
     os.sleep(1)
@@ -459,13 +459,13 @@ local function main()
         local now = os.time()
 
         -- 眼镜更新（独立计时）
-        if glasses and now - lastGlassesTime >= glassesInterval then
+        if glasses and now - lastGlassesTime >= glassesInterval * 100 then
             updateGlasses()
             lastGlassesTime = now
         end
 
         -- 维持检查（独立计时）
-        if now - lastCheckTime >= checkInterval then
+        if now - lastCheckTime >= checkInterval * 100 then
             performMaintenance()
             lastCheckTime = now
         end
