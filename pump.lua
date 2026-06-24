@@ -513,7 +513,7 @@ local function main()
             lastCheckTime = now
         end
 
-        os.sleep(0.5)
+        os.sleep(1)
     end
 
     event.ignore("interrupted", onInterrupted)
