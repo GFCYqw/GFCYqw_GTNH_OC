@@ -87,7 +87,7 @@ local function GetUtf8Len(str)
 end
 
 local function getFluidAmount(fluidName)
-    if not me then return nil end          -- 无 ME 接口直接返回 nil
+    if not me then return nil end
     local ok, fluids = pcall(me.getFluidsInNetwork, me)
     if not ok then meConnected = false; return nil end
     meConnected = true
@@ -146,7 +146,7 @@ local function setShadowText(key, text, r, g, b)
 end
 
 local function glassesSetup()
-    if not glasses then return end        -- 无眼镜则跳过
+    if not glasses then return end
     glasses.removeAll()
     createShadowText(statusKey, offsetX, offsetY)
     createShadowText(machineKey, offsetX, offsetY + lineSpacing)
@@ -157,7 +157,7 @@ local function glassesSetup()
 end
 
 local function updateGlasses()
-    if not glasses then return end        -- 无眼镜则跳过
+    if not glasses then return end
     local statusText = meConnected and "ME: 在线" or "ME: 离线"
     local statusColor = meConnected and {85, 255, 85} or {255, 85, 85}
     setShadowText(statusKey, statusText, table.unpack(statusColor))
@@ -258,19 +258,21 @@ end
 -- ==================== 终端仪表板（显示数量/阈值） ====================
 local function drawDashboard(target, adjustmentMsg)
     term.clear()
-    -- 标题与状态行（添加 AR 眼镜状态）
+    print("drawDashboard called")  -- 调试
+    -- 标题与状态行（添加 AR 眼镜状态 + 时间）
     local glassesStatus = glasses and "可用" or "不可用"
-    print(string.format("========== 太空电梯流体监控与维持系统（按 Ctrl+C 退出） =========="))
+    local timeStr = os.date("%Y-%m-%d %H:%M:%S")
+    print(string.format("========== 太空电梯流体监控与维持系统 [%s] ==========", timeStr))
     print(string.format("ME网络: %s  |  钻机数: %d 台  |  AR眼镜: %s", 
           meConnected and "在线" or "离线", #gt_machines, glassesStatus))
-    print("----------------------------------------------")
+    print("--------------------------------------------------------------")
 
-    -- 流体库存显示：名称 和 数量/阈值
+    -- 流体库存显示：名称 和 数量/阈值（每行4个，即按4个一组）
     if #PROCESSED_FLUIDS > 0 then
-        for i = 1, #PROCESSED_FLUIDS, 7 do
+        for i = 1, #PROCESSED_FLUIDS, 4 do
             local lineLabel = "  "
             local lineValue = "  "
-            for j = i, math.min(i+6, #PROCESSED_FLUIDS) do
+            for j = i, math.min(i+3, #PROCESSED_FLUIDS) do
                 local fluid = PROCESSED_FLUIDS[j]
                 local label = fluid.display
                 local amount = getFluidAmount(fluid.name)
@@ -291,7 +293,7 @@ local function drawDashboard(target, adjustmentMsg)
             print(lineValue)
         end
     end
-    print("----------------------------------------------")
+    print("--------------------------------------------------------------")
 
     -- 当前目标
     if target then
@@ -304,7 +306,7 @@ local function drawDashboard(target, adjustmentMsg)
     if adjustmentMsg and adjustmentMsg ~= "" then
         print("【操作日志】" .. adjustmentMsg)
     end
-    print("==============================================")
+    print("==============================================================")
 end
 
 -- ==================== 执行维持 ====================
