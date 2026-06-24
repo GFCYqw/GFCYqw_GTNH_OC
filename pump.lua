@@ -5,7 +5,7 @@
     2. 每60秒检查一次，若某流体低于阈值，自动调整所有太空钻机参数（仅在目标变化时调整）。
     3. 自动发现钻机。
     4. 终端以仪表板形式显示当前状态，展示每个流体的实际库存与阈值。
-    5. 所有流体充足且无持续目标时自动关闭钻机。
+    5. 所有流体充足且无持续目标时自动关闭钻机（每次检查强制关闭，覆盖手动开启）。
     6. 变化率基于眼镜刷新的实际间隔（computer.uptime）计算。
     7. 终端显示运行时间（调试用）。
 ]]
@@ -370,7 +370,7 @@ local function drawDashboard(target, adjustmentMsg)
     print("====================================================================")
 end
 
--- ==================== 执行维持 ====================
+-- ==================== 执行维持（修改后：无目标时强制关闭） ====================
 local function performMaintenance()
     if #gt_machines == 0 then
         drawDashboard(nil, "警告：太空钻机离线，跳过维持检查")
@@ -384,19 +384,22 @@ local function performMaintenance()
     local target = findFluidToRefill()
     local adjustmentMsg = ""
 
-    local targetChanged = false
-    if target == nil and lastTargetFluid == nil then
-        targetChanged = false
-    elseif target == nil and lastTargetFluid ~= nil then
-        targetChanged = true
-    elseif target ~= nil and lastTargetFluid == nil then
-        targetChanged = true
-    elseif target.name ~= lastTargetFluid.name then
-        targetChanged = true
-    end
+    if target == nil then
+        -- 无目标：强制关闭所有钻机（覆盖手动开启）
+        adjustmentMsg = "所有流体充足，无目标，正在关闭所有钻机"
+        local shutDownCount = shutdownAllMachines()
+        adjustmentMsg = adjustmentMsg .. string.format(" | 已关闭 %d 台机器", shutDownCount)
+        lastTargetFluid = nil
+    else
+        -- 有目标：仅当目标变化时才调整
+        local targetChanged = false
+        if lastTargetFluid == nil then
+            targetChanged = true
+        elseif target.name ~= lastTargetFluid.name then
+            targetChanged = true
+        end
 
-    if targetChanged then
-        if target then
+        if targetChanged then
             if target.threshold == -1 then
                 adjustmentMsg = string.format("所有常规流体充足，切换至持续获取 %s", target.display)
             else
@@ -412,16 +415,7 @@ local function performMaintenance()
             end
             lastTargetFluid = target
         else
-            adjustmentMsg = "所有流体充足，无目标，正在关闭所有钻机"
-            local shutDownCount = shutdownAllMachines()
-            adjustmentMsg = adjustmentMsg .. string.format(" | 已关闭 %d 台机器", shutDownCount)
-            lastTargetFluid = nil
-        end
-    else
-        if target then
             adjustmentMsg = string.format("目标未变化，保持当前设置（%s）", target.display)
-        else
-            adjustmentMsg = "目标未变化，所有流体充足且已关闭钻机"
         end
     end
 
