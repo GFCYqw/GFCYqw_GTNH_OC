@@ -30,7 +30,7 @@ local textScale = 1
 local offsetX = 3
 local offsetY = 15
 local lineSpacing = 1
-local updateInterval = 10          -- 眼镜刷新间隔（秒）
+local updateInterval = 3          -- 眼镜刷新间隔（秒）
 local CHECK_INTERVAL = 60          -- 维持检查间隔（秒）
 
 -- 流体配置：{注册名, 阈值(mB), 行星参数, 气体参数, 显示名}
@@ -270,11 +270,10 @@ end
 local function drawDashboard(target, adjustmentMsg)
     term.clear()
     local glassesStatus = glasses and "可用" or "不可用"
-    local timeStr = os.date("%Y-%m-%d %H:%M:%S")
-    print(string.format("========== 太空电梯流体监控与维持系统 [%s] ==========", timeStr))
+    print(string.format("======----=========  太空电梯流体监控与维持系统  ===================", timeStr))
     print(string.format("ME网络: %s  |  钻机数: %d 台  |  AR眼镜: %s", 
           meConnected and "在线" or "离线", #gt_machines, glassesStatus))
-    print("--------------------------------------------------------------")
+    print("------------------------------------------------------------------")
 
     if #PROCESSED_FLUIDS > 0 then
         for i = 1, #PROCESSED_FLUIDS, 4 do
@@ -301,7 +300,7 @@ local function drawDashboard(target, adjustmentMsg)
             print(lineValue)
         end
     end
-    print("--------------------------------------------------------------")
+    print("------------------------------------------------------------------")
 
     if target then
         print(string.format("【当前目标】%s (行星=%d, 气体=%d)", target.display, target.param1, target.param2))
@@ -312,7 +311,7 @@ local function drawDashboard(target, adjustmentMsg)
     if adjustmentMsg and adjustmentMsg ~= "" then
         print("【操作日志】" .. adjustmentMsg)
     end
-    print("==============================================================")
+    print("==================================================================")
 end
 
 -- ==================== 执行维持 ====================
