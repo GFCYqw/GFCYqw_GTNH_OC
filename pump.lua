@@ -34,8 +34,8 @@ local textScale = 1
 local offsetX = 3
 local offsetY = 15
 local lineSpacing = 1
-local glassesInterval = 2          -- 眼镜刷新间隔（秒）
-local checkInterval = 20           -- 维持检查间隔（秒）
+local glassesInterval = 3          -- 眼镜刷新间隔（秒）
+local checkInterval = 30           -- 维持检查间隔（秒）
 
 -- 流体配置：{注册名, 阈值(mB), 行星参数, 气体参数, 显示名}
 local FLUID_CONFIGS = {
