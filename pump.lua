@@ -5,7 +5,7 @@
     2. 每60秒检查一次，若某流体低于阈值，自动调整所有太空钻机参数。
     3. 自动发现钻机。
     4. 终端以仪表板形式显示当前状态，展示每个流体的实际库存与阈值。
-    5. AR眼镜可配置显示全部流体或仅当前目标。
+    5. AR眼镜可配置显示全部流体或仅当前目标，且隐藏的流体不占用显示空间。
 ]]
 
 local component = require("component")
@@ -20,8 +20,7 @@ local textScale = 1
 local offsetX = 3
 local offsetY = 15
 local lineSpacing = 1
-local updateInterval = 10          -- 眼镜刷新间隔（秒）
-local CHECK_INTERVAL = 60          -- 维持检查间隔（秒）
+local REFRESH_INTERVAL = 20
 
 -- AR 眼镜显示模式：true=显示所有监控流体，false=仅显示当前目标流体
 local glassesShowAll = false
@@ -178,7 +177,7 @@ local function findFluidToRefill()
     return nil
 end
 
--- ==================== 眼镜更新（调用 findFluidToRefill） ====================
+-- ==================== 眼镜更新（紧凑显示，隐藏的流体不占行） ====================
 local function updateGlasses()
     if not glasses then return end
 
@@ -205,37 +204,48 @@ local function updateGlasses()
         end
     end
 
-    -- 构建查找表
-    local displayMap = {}
-    for _, f in ipairs(displayList) do
-        displayMap[f.name] = true
-    end
-
-    -- 遍历所有流体
+    -- 先隐藏所有流体标签（避免残留）
     for _, fluid in ipairs(PROCESSED_FLUIDS) do
         local key = "fluid_" .. fluid.name
-        if displayMap[fluid.name] then
-            local amount = getFluidAmount(fluid.name)
-            local last = lastAmounts[fluid.name] or amount
-            local diff = (amount and last) and ((amount - last) / updateInterval) or 0
-            lastAmounts[fluid.name] = amount
-            local rateText = formatRate(diff)
-            local text = string.format("%s: %s mB%s", fluid.display, formatFluidAmount(amount), rateText)
-
-            local r, g, b = 255, 255, 255
-            if amount == nil then
-                r, g, b = 128, 128, 128
-            elseif fluid.threshold and fluid.threshold > 0 and amount < fluid.threshold then
-                r, g, b = 255, 85, 85
-            else
-                if diff > 0 then r, g, b = 85, 255, 85
-                elseif diff < 0 then r, g, b = 255, 85, 85
-                else r, g, b = 255, 255, 255 end
-            end
-            setShadowText(key, text, r, g, b)
-        else
-            setShadowText(key, "", 128, 128, 128)
+        if texts[key] then
+            texts[key].setVisible(false)
+            texts[key .. "shadow"].setVisible(false)
         end
+    end
+
+    -- 从基准行开始重新布局显示的流体
+    local currentY = offsetY + lineSpacing
+    for _, fluid in ipairs(displayList) do
+        local key = "fluid_" .. fluid.name
+        -- 设置位置
+        texts[key].setPosition(offsetX, currentY * 10)       -- Y 乘以 10（因为 createShadowText 内部做了 *10）
+        texts[key .. "shadow"].setPosition(offsetX + 1, (currentY + 1) * 10)
+
+        -- 获取数据并设置文本和颜色
+        local amount = getFluidAmount(fluid.name)
+        local last = lastAmounts[fluid.name] or amount
+        local diff = (amount and last) and ((amount - last) / REFRESH_INTERVAL) or 0
+        lastAmounts[fluid.name] = amount
+        local rateText = formatRate(diff)
+        local text = string.format("%s: %s mB%s", fluid.display, formatFluidAmount(amount), rateText)
+
+        local r, g, b = 255, 255, 255
+        if amount == nil then
+            r, g, b = 128, 128, 128
+        elseif fluid.threshold and fluid.threshold > 0 and amount < fluid.threshold then
+            r, g, b = 255, 85, 85
+        else
+            if diff > 0 then r, g, b = 85, 255, 85
+            elseif diff < 0 then r, g, b = 255, 85, 85
+            else r, g, b = 255, 255, 255 end
+        end
+        setShadowText(key, text, r, g, b)
+
+        -- 设置为可见
+        texts[key].setVisible(true)
+        texts[key .. "shadow"].setVisible(true)
+
+        currentY = currentY + lineSpacing
     end
 end
 
@@ -432,8 +442,8 @@ local function main()
     end
 
     term.clear()
-    print("===== 太空电梯流体监控与维持系统 Version 1.0 By GFCYqw=====")
-    print(string.format("AR 眼镜刷新间隔: %ds, 维持检查间隔: %ds", updateInterval, CHECK_INTERVAL))
+    print("===== 太空电梯流体监控与维持系统 Version 1.1 By GFCYqw =====")
+    print(string.format("统一刷新间隔: %ds (眼镜更新 & 维持检查)", REFRESH_INTERVAL))
     print("眼镜显示模式: " .. (glassesShowAll and "全部流体" or "仅当前目标"))
     print("按 Ctrl+C 退出")
     print("==================================")
@@ -456,12 +466,12 @@ local function main()
         end
 
         local now = os.time()
-        if now - lastCheckTime >= CHECK_INTERVAL then
+        if now - lastCheckTime >= REFRESH_INTERVAL then
             performMaintenance()
             lastCheckTime = now
         end
 
-        os.sleep(updateInterval)
+        os.sleep(REFRESH_INTERVAL)  -- 使用统一间隔，每 REFRESH_INTERVAL 秒循环一次
     end
 
     event.ignore("interrupted", onInterrupted)
