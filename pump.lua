@@ -2,7 +2,7 @@
   综合脚本：AR眼镜流体监控 + 自动维持（太空钻机生产）
   功能：
     1. AR眼镜实时显示流体存量、变化率、阈值警告。
-    2. 每60秒检查一次，若某流体低于阈值，自动调整所有太空钻机参数。
+    2. 每60秒检查一次，若某流体低于阈值，自动调整所有太空钻机参数（仅在目标变化时调整）。
     3. 自动发现钻机。
     4. 终端以仪表板形式显示当前状态，展示每个流体的实际库存与阈值。
 ]]
@@ -12,7 +12,7 @@ local event = require("event")
 local os = require("os")
 local term = require("term")
 
--- ==================== 安全获取组件（避免因组件缺失而报错） ====================
+-- ==================== 安全获取组件 ====================
 local glasses = nil
 for address in component.list("glasses") do
     glasses = component.proxy(address)
@@ -30,8 +30,8 @@ local textScale = 1
 local offsetX = 3
 local offsetY = 15
 local lineSpacing = 1
-local updateInterval = 3          -- 眼镜刷新间隔（秒）
-local CHECK_INTERVAL = 60          -- 维持检查间隔（秒）
+local glassesInterval = 3          -- 眼镜刷新间隔（秒）
+local checkInterval = 60           -- 维持检查间隔（秒）
 
 -- 流体配置：{注册名, 阈值(mB), 行星参数, 气体参数, 显示名}
 local FLUID_CONFIGS = {
@@ -65,7 +65,9 @@ local machineKey = "machine_count"
 local texts = {}
 local lastAmounts = {}
 local doContinue = true
+local lastGlassesTime = 0
 local lastCheckTime = 0
+local lastTargetFluid = nil   -- 记录上一次调整的目标流体
 
 local PROCESSED_FLUIDS = {}
 local gt_machines = {}
@@ -182,7 +184,7 @@ local function updateGlasses()
         local amount = getFluidAmount(fluid.name)
         local key = "fluid_" .. fluid.name
         local last = lastAmounts[fluid.name] or amount
-        local diff = (amount - last) / updateInterval
+        local diff = (amount - last) / glassesInterval
         lastAmounts[fluid.name] = amount
         local rateText = formatRate(diff)
         local text = string.format("%s: %s mB%s", fluid.display, formatFluidAmount(amount), rateText)
@@ -266,14 +268,14 @@ local function findFluidToRefill()
     return nil
 end
 
--- ==================== 终端仪表板（显示数量/阈值） ====================
+-- ==================== 终端仪表板 ====================
 local function drawDashboard(target, adjustmentMsg)
     term.clear()
     local glassesStatus = glasses and "可用" or "不可用"
-    print(string.format("======----=========  太空电梯流体监控与维持系统  ===================", timeStr))
+    print("===================  太空电梯流体监控与维持系统  ===================")
     print(string.format("ME网络: %s  |  钻机数: %d 台  |  AR眼镜: %s", 
           meConnected and "在线" or "离线", #gt_machines, glassesStatus))
-    print("------------------------------------------------------------------")
+    print("--------------------------------------------------------------------")
 
     if #PROCESSED_FLUIDS > 0 then
         for i = 1, #PROCESSED_FLUIDS, 4 do
@@ -300,7 +302,7 @@ local function drawDashboard(target, adjustmentMsg)
             print(lineValue)
         end
     end
-    print("------------------------------------------------------------------")
+    print("--------------------------------------------------------------------")
 
     if target then
         print(string.format("【当前目标】%s (行星=%d, 气体=%d)", target.display, target.param1, target.param2))
@@ -311,10 +313,10 @@ local function drawDashboard(target, adjustmentMsg)
     if adjustmentMsg and adjustmentMsg ~= "" then
         print("【操作日志】" .. adjustmentMsg)
     end
-    print("==================================================================")
+    print("====================================================================")
 end
 
--- ==================== 执行维持 ====================
+-- ==================== 执行维持（优化：仅在目标变化时调整） ====================
 local function performMaintenance()
     if #gt_machines == 0 then
         drawDashboard(nil, "警告：太空钻机离线，跳过维持检查")
@@ -327,23 +329,47 @@ local function performMaintenance()
 
     local target = findFluidToRefill()
     local adjustmentMsg = ""
-    
-    if target then
-        if target.threshold == -1 then
-            adjustmentMsg = string.format("所有常规流体充足，开始持续获取 %s", target.display)
+
+    -- 判断目标是否变化（比较流体名称，允许 nil）
+    local targetChanged = false
+    if target == nil and lastTargetFluid == nil then
+        targetChanged = false
+    elseif target == nil and lastTargetFluid ~= nil then
+        targetChanged = true
+    elseif target ~= nil and lastTargetFluid == nil then
+        targetChanged = true
+    elseif target.name ~= lastTargetFluid.name then
+        targetChanged = true
+    end
+
+    if targetChanged then
+        -- 目标变化，执行调整
+        if target then
+            if target.threshold == -1 then
+                adjustmentMsg = string.format("所有常规流体充足，切换至持续获取 %s", target.display)
+            else
+                adjustmentMsg = string.format("检测到 %s 低于阈值，切换至补充", target.display)
+            end
+            local successCount = adjustAllMachines(target.param1, target.param2)
+            if successCount > 0 then
+                adjustmentMsg = adjustmentMsg .. string.format(" | 已调整 %d 台机器 %s",
+                    successCount,
+                    target.threshold == -1 and "持续获取" or "补充")
+            else
+                adjustmentMsg = adjustmentMsg .. " | 所有机器参数调整失败"
+            end
         else
-            adjustmentMsg = string.format("检测到 %s 低于阈值，开始补充", target.display)
+            -- 无目标（所有流体充足且无持续获取目标）
+            adjustmentMsg = "所有流体充足，无目标（机器保持当前状态）"
         end
-        local successCount = adjustAllMachines(target.param1, target.param2)
-        if successCount > 0 then
-            adjustmentMsg = adjustmentMsg .. string.format(" | 已调整 %d 台机器 %s",
-                successCount,
-                target.threshold == -1 and "持续获取" or "补充")
-        else
-            adjustmentMsg = adjustmentMsg .. " | 所有机器参数调整失败"
-        end
+        lastTargetFluid = target   -- 更新记录
     else
-        adjustmentMsg = "所有流体库存充足，无需调整"
+        -- 目标未变化，不执行任何操作
+        if target then
+            adjustmentMsg = string.format("目标未变化，保持当前设置（%s）", target.display)
+        else
+            adjustmentMsg = "目标未变化，所有流体充足"
+        end
     end
 
     drawDashboard(target, adjustmentMsg)
@@ -411,8 +437,8 @@ local function main()
     end
 
     term.clear()
-    print("===== 太空电梯流体监控与维持系统 Version 1.0 By GFCYqw =====")
-    print(string.format("AR 眼镜刷新间隔: %ds, 维持检查间隔: %ds", updateInterval, CHECK_INTERVAL))
+    print("===== 太空电梯流体监控与维持系统 Version 1.2 By GFCYqw =====")
+    print(string.format("AR 眼镜刷新间隔: %ds, 维持检查间隔: %ds", glassesInterval, checkInterval))
     print("按 Ctrl+C 退出")
     print("==================================")
     os.sleep(1)
@@ -420,26 +446,31 @@ local function main()
     event.listen("interrupted", onInterrupted)
 
     local lastStatus = nil
+    lastGlassesTime = os.time()
     lastCheckTime = os.time()
-    performMaintenance()
+    performMaintenance()  -- 首次显示
     lastCheckTime = os.time()
 
     while doContinue do
-        if glasses then
-            updateGlasses()
-        end
-
         if meConnected ~= lastStatus then
             lastStatus = meConnected
         end
 
         local now = os.time()
-        if now - lastCheckTime >= CHECK_INTERVAL then
+
+        -- 眼镜更新（独立计时）
+        if glasses and now - lastGlassesTime >= glassesInterval then
+            updateGlasses()
+            lastGlassesTime = now
+        end
+
+        -- 维持检查（独立计时）
+        if now - lastCheckTime >= checkInterval then
             performMaintenance()
             lastCheckTime = now
         end
 
-        os.sleep(updateInterval)
+        os.sleep(1)
     end
 
     event.ignore("interrupted", onInterrupted)
