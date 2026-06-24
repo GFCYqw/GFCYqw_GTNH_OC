@@ -2,10 +2,10 @@
   综合脚本：AR眼镜流体监控 + 自动维持（太空钻机生产）
   功能：
     1. AR眼镜实时显示流体存量、变化率、阈值警告。
-    2. 每60秒检查一次，若某流体低于阈值，自动调整所有太空钻机参数。
+    2. 定期检查流体库存，若某流体低于阈值，自动调整所有太空钻机参数。
     3. 自动发现钻机。
     4. 终端以仪表板形式显示当前状态，展示每个流体的实际库存与阈值。
-    5. AR眼镜可配置显示全部流体或仅当前目标，且隐藏的流体不占用显示空间。
+    5. AR眼镜可配置显示全部流体或仅当前目标，隐藏的流体不占用显示空间。
 ]]
 
 local component = require("component")
@@ -20,7 +20,9 @@ local textScale = 1
 local offsetX = 3
 local offsetY = 15
 local lineSpacing = 1
-local REFRESH_INTERVAL = 20
+
+local glassesInterval = 10          -- 眼镜刷新间隔（秒）
+local checkInterval = 60            -- 维持检查间隔（秒）
 
 -- AR 眼镜显示模式：true=显示所有监控流体，false=仅显示当前目标流体
 local glassesShowAll = false
@@ -57,6 +59,7 @@ local machineKey = "machine_count"
 local texts = {}
 local lastAmounts = {}
 local doContinue = true
+local lastGlassesTime = 0
 local lastCheckTime = 0
 
 local PROCESSED_FLUIDS = {}
@@ -159,7 +162,7 @@ local function glassesSetup()
     end
 end
 
--- ==================== 维持逻辑（提前定义，供 updateGlasses 调用） ====================
+-- ==================== 维持逻辑 ====================
 local function findFluidToRefill()
     for _, fluid in ipairs(PROCESSED_FLUIDS) do
         if fluid.threshold ~= -1 then
@@ -177,7 +180,7 @@ local function findFluidToRefill()
     return nil
 end
 
--- ==================== 眼镜更新（紧凑显示，隐藏的流体不占行） ====================
+-- ==================== 眼镜更新（紧凑排列，隐藏的流体不占行） ====================
 local function updateGlasses()
     if not glasses then return end
 
@@ -204,7 +207,7 @@ local function updateGlasses()
         end
     end
 
-    -- 先隐藏所有流体标签（避免残留）
+    -- 先隐藏所有流体标签
     for _, fluid in ipairs(PROCESSED_FLUIDS) do
         local key = "fluid_" .. fluid.name
         if texts[key] then
@@ -213,18 +216,18 @@ local function updateGlasses()
         end
     end
 
-    -- 从基准行开始重新布局显示的流体
-    local currentY = offsetY + lineSpacing
+    -- 从创建时第一个流体的 Y 坐标开始重新布局（offsetY + 2*lineSpacing）
+    local currentY = offsetY + 2 * lineSpacing
     for _, fluid in ipairs(displayList) do
         local key = "fluid_" .. fluid.name
-        -- 设置位置
-        texts[key].setPosition(offsetX, currentY * 10)       -- Y 乘以 10（因为 createShadowText 内部做了 *10）
+        -- 设置位置（注意 Y 乘以 10）
+        texts[key].setPosition(offsetX, currentY * 10)
         texts[key .. "shadow"].setPosition(offsetX + 1, (currentY + 1) * 10)
 
-        -- 获取数据并设置文本和颜色
+        -- 获取数据
         local amount = getFluidAmount(fluid.name)
         local last = lastAmounts[fluid.name] or amount
-        local diff = (amount and last) and ((amount - last) / REFRESH_INTERVAL) or 0
+        local diff = (amount and last) and ((amount - last) / glassesInterval) or 0  -- 使用眼镜间隔计算变化率
         lastAmounts[fluid.name] = amount
         local rateText = formatRate(diff)
         local text = string.format("%s: %s mB%s", fluid.display, formatFluidAmount(amount), rateText)
@@ -241,7 +244,7 @@ local function updateGlasses()
         end
         setShadowText(key, text, r, g, b)
 
-        -- 设置为可见
+        -- 设为可见
         texts[key].setVisible(true)
         texts[key .. "shadow"].setVisible(true)
 
@@ -442,8 +445,8 @@ local function main()
     end
 
     term.clear()
-    print("===== 太空电梯流体监控与维持系统 Version 1.1 By GFCYqw =====")
-    print(string.format("统一刷新间隔: %ds (眼镜更新 & 维持检查)", REFRESH_INTERVAL))
+    print("===== 太空电梯流体监控与维持系统 Version 1.2 By GFCYqw =====")
+    print(string.format("眼镜刷新间隔: %ds, 维持检查间隔: %ds", glassesInterval, checkInterval))
     print("眼镜显示模式: " .. (glassesShowAll and "全部流体" or "仅当前目标"))
     print("按 Ctrl+C 退出")
     print("==================================")
@@ -451,27 +454,28 @@ local function main()
 
     event.listen("interrupted", onInterrupted)
 
-    local lastStatus = nil
+    lastGlassesTime = os.time()
     lastCheckTime = os.time()
-    performMaintenance()
+    performMaintenance()  -- 首次立即显示状态
     lastCheckTime = os.time()
 
     while doContinue do
-        if glasses then
-            updateGlasses()
-        end
-
-        if meConnected ~= lastStatus then
-            lastStatus = meConnected
-        end
-
         local now = os.time()
-        if now - lastCheckTime >= REFRESH_INTERVAL then
+
+        -- 检查是否需要更新眼镜
+        if glasses and now - lastGlassesTime >= glassesInterval then
+            updateGlasses()
+            lastGlassesTime = now
+        end
+
+        -- 检查是否需要执行维持
+        if now - lastCheckTime >= checkInterval then
             performMaintenance()
             lastCheckTime = now
         end
 
-        os.sleep(REFRESH_INTERVAL)  -- 使用统一间隔，每 REFRESH_INTERVAL 秒循环一次
+        -- 每秒轮询一次
+        os.sleep(1)
     end
 
     event.ignore("interrupted", onInterrupted)
