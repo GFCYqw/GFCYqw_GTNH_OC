@@ -6,13 +6,13 @@
     3. 自动发现钻机。
     4. 终端以仪表板形式显示当前状态，展示每个流体的实际库存与阈值。
     5. 所有流体充足且无持续目标时自动关闭钻机。
-    6. 变化率基于实际时间差（computer.uptime）计算。
+    6. 变化率基于眼镜刷新的实际间隔（computer.uptime）计算。
     7. 终端显示运行时间（调试用）。
 ]]
 
 local component = require("component")
 local event = require("event")
-local computer = require("computer")   -- 重新引入
+local computer = require("computer")
 local os = require("os")
 local term = require("term")
 
@@ -68,12 +68,11 @@ local statusKey = "me_status"
 local machineKey = "machine_count"
 local texts = {}
 local lastAmounts = {}          -- 存储上次的 amount
-local lastUpdateTimes = {}      -- 存储上次更新的 computer.uptime()
 local doContinue = true
 local lastGlassesTime = 0
 local lastCheckTime = 0
 local lastTargetFluid = nil
-local startTime = 0             -- 脚本启动时间
+local startTime = 0
 
 local PROCESSED_FLUIDS = {}
 local gt_machines = {}
@@ -194,8 +193,11 @@ local function glassesSetup()
     end
 end
 
+-- 使用眼镜刷新的实际间隔计算变化率
 local function updateGlasses(now)
     if not glasses then return end
+
+    -- 更新状态和机器数
     local statusText = meConnected and "ME: 在线" or "ME: 离线"
     local statusColor = meConnected and {85, 255, 85} or {255, 85, 85}
     setShadowText(statusKey, statusText, table.unpack(statusColor))
@@ -205,23 +207,23 @@ local function updateGlasses(now)
     local machineColor = machineCount > 0 and {85, 255, 85} or {255, 85, 85}
     setShadowText(machineKey, machineText, table.unpack(machineColor))
 
+    -- 计算时间差（两次眼镜刷新之间的间隔）
+    local timeDiff = now - lastGlassesTime
+    if timeDiff <= 0 then timeDiff = 0 end
+
     for _, fluid in ipairs(PROCESSED_FLUIDS) do
         local amount = getFluidAmount(fluid.name)
         local key = "fluid_" .. fluid.name
 
-        local lastAmount = lastAmounts[fluid.name]
-        local lastTime = lastUpdateTimes[fluid.name]
         local diff = 0
-        if amount ~= nil and lastAmount ~= nil and lastTime ~= nil then
-            local timeDiff = now - lastTime
-            if timeDiff > 0 then
-                diff = (amount - lastAmount) / timeDiff
-            end
+        local lastAmount = lastAmounts[fluid.name]
+        if amount ~= nil and lastAmount ~= nil and timeDiff > 0 then
+            diff = (amount - lastAmount) / timeDiff
         end
 
+        -- 更新记录
         if amount ~= nil then
             lastAmounts[fluid.name] = amount
-            lastUpdateTimes[fluid.name] = now
         end
 
         local rateText = formatRate(diff)
@@ -322,7 +324,6 @@ end
 local function drawDashboard(target, adjustmentMsg)
     term.clear()
     print("===================  太空电梯流体监控与维持系统  ===================")
-    -- 显示运行时间（debug）
     local uptime = computer.uptime()
     local elapsed = uptime - startTime
     print(string.format("运行时间: %s", formatUptime(elapsed)))
@@ -497,21 +498,16 @@ local function main()
 
     event.listen("interrupted", onInterrupted)
 
-    local lastStatus = nil
-    startTime = computer.uptime()          -- 记录启动时间
+    startTime = computer.uptime()
     lastGlassesTime = startTime
     lastCheckTime = startTime
-    performMaintenance()                  -- 首次显示
-    lastCheckTime = computer.uptime()     -- 更新执行时间
+    performMaintenance()
+    lastCheckTime = computer.uptime()
 
     while doContinue do
-        if meConnected ~= lastStatus then
-            lastStatus = meConnected
-        end
-
         local now = computer.uptime()
 
-        -- 眼镜更新
+        -- 眼镜更新（使用眼镜间隔）
         if glasses and now - lastGlassesTime >= glassesInterval then
             updateGlasses(now)
             lastGlassesTime = now
@@ -523,7 +519,7 @@ local function main()
             lastCheckTime = now
         end
 
-        os.sleep(1)
+        os.sleep(0.5)
     end
 
     event.ignore("interrupted", onInterrupted)
