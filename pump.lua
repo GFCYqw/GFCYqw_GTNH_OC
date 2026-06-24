@@ -1,11 +1,10 @@
 --[[
   综合脚本：AR眼镜流体监控 + 自动维持（太空钻机生产）
   功能：
-    1. 在AR眼镜上实时显示流体存量、变化率、阈值警告（红色低于阈值）。
-    2. 每30秒检查一次，若某流体低于阈值，自动调整所有太空钻机参数生产该流体。
-    3. 支持多台机器及不同等级（等级1与其他等级参数设置方式不同）。
-    4. 优先生产最急需的流体（按配置顺序）。
-    5. 眼镜上显示ME连接状态 + 钻机数量 + 各流体数据。
+    1. 在AR眼镜上实时显示流体存量、变化率、阈值警告。
+    2. 每30秒检查一次，若某流体低于阈值，自动调整所有太空钻机参数。
+    3. 自动发现钻机（无需手动配置地址）。
+    4. 终端显示当前目标、库存比例、机器数量等详细信息。
 ]]
 
 local component = require("component")
@@ -20,14 +19,14 @@ local term = require("term")
 -- 眼镜显示参数
 local textScale = 1
 local offsetX = 3
-local offsetY = 15               -- 起始Y坐标（像素/10）
-local lineSpacing = 1            -- 行间距（眼镜单位）
-local updateInterval = 1         -- 眼镜刷新间隔（秒）
+local offsetY = 15
+local lineSpacing = 1
+local updateInterval = 1          -- 眼镜刷新间隔（秒）
 
 -- 流体配置：{注册名, 阈值(mB), 行星参数, 气体参数}
 -- 阈值支持单位后缀: k,m,g,t (如 "4g" 表示 40亿)
--- 若阈值设为 -1 则表示"持续获取"（即当所有其他流体充足时，优先生产该流体）
--- 注意：显示名称默认使用注册名，若想自定义显示名，可在配置中添加第五个字段，见下方注释
+-- 若阈值设为 -1 则表示"持续获取"（当所有常规流体充足时生产）
+-- 可添加第五个字段自定义显示名，否则使用注册名
 local FLUID_CONFIGS = {
     {"liquidair", "4g", 8, 2},
     {"helium", "100g", 5, 4},
@@ -51,14 +50,6 @@ local FLUID_CONFIGS = {
     {"radon", "10g", 8, 6},
     {"krypton", "100m", 5, 8},
     {"xenon", -1, 6, 4},
-    -- 若要自定义显示名，请写成 {注册名, 阈值, 行星, 气体, 显示名}
-    -- 例如 {"plasma.helium", "10k", 8, 2, "氦等离子体"}
-}
-
--- 机器配置：{地址, 等级}
-local MACHINES = {
-    {"24950641-92a7-480e-ba7e-ddf276f1012d", 1},
-    -- {"你的机器地址2", 1},
 }
 
 -- 维持检查间隔（秒）
@@ -68,17 +59,16 @@ local CHECK_INTERVAL = 30
 
 local meConnected = false
 local statusKey = "me_status"
-local machineKey = "machine_count"   -- 钻机数量标签的键
+local machineKey = "machine_count"
 local texts = {}
 local lastAmounts = {}
 local doContinue = true
 local lastCheckTime = 0
 
 local PROCESSED_FLUIDS = {}
-local gt_machines = {}
-local machineLevels = {}
+local gt_machines = {}      -- 自动发现的钻机列表
 
--- ==================== 辅助函数 ====================
+-- ==================== 辅助函数（解析后缀、格式化） ====================
 
 local function parseNumberWithSuffix(value)
     if type(value) == "number" then return value end
@@ -105,6 +95,18 @@ local function formatNumberReadable(number)
     else return tostring(number) end
 end
 
+-- 中文字符串显示宽度（用于对齐）
+local function GetUtf8Len(str)
+    local len = 0
+    local currentIndex = 1
+    while currentIndex <= #str do
+        local char = string.byte(str, currentIndex)
+        currentIndex = currentIndex + (char > 240 and 4 or char > 225 and 3 or char > 192 and 2 or 1)
+        len = len + (char > 192 and 2 or 1)
+    end
+    return len
+end
+
 -- ==================== ME 流体读取 ====================
 
 local function getFluidAmount(fluidName)
@@ -122,6 +124,22 @@ local function getFluidAmount(fluidName)
         end
     end
     return 0
+end
+
+-- 获取所有目标流体的库存比例（用于终端显示）
+local function getFluidRatios()
+    local ratios = {}
+    for _, fluid in ipairs(PROCESSED_FLUIDS) do
+        local amount = getFluidAmount(fluid.name)
+        if amount == nil then
+            ratios[fluid.name] = nil
+        elseif fluid.threshold and fluid.threshold > 0 then
+            ratios[fluid.name] = amount / fluid.threshold
+        else
+            ratios[fluid.name] = 1  -- 无阈值视为充足
+        end
+    end
+    return ratios
 end
 
 -- ==================== 格式化函数（眼镜显示） ====================
@@ -175,13 +193,10 @@ end
 local function glassesSetup()
     if not glasses then return end
     glasses.removeAll()
-    -- 第一行：ME状态
     createShadowText(statusKey, offsetX, offsetY)
-    -- 第二行：钻机数量
     createShadowText(machineKey, offsetX, offsetY + lineSpacing)
-    -- 从第三行开始：流体列表
     for i, fluid in ipairs(PROCESSED_FLUIDS) do
-        local y = offsetY + (i + 1) * lineSpacing   -- +1 跳过机器数量行
+        local y = offsetY + (i + 1) * lineSpacing
         createShadowText("fluid_" .. fluid.name, offsetX, y)
     end
 end
@@ -189,19 +204,16 @@ end
 local function updateGlasses()
     if not glasses then return end
 
-    -- 1. ME状态
     local statusText = meConnected and "ME: 在线" or "ME: 离线"
     local statusColor = meConnected and {85, 255, 85} or {255, 85, 85}
     setShadowText(statusKey, statusText, table.unpack(statusColor))
 
-    -- 2. 钻机数量
     local machineCount = #gt_machines
     local machineText = machineCount > 0 and ("钻机: " .. machineCount .. "台") or "钻机: 无"
     local machineColor = machineCount > 0 and {255, 255, 255} or {128, 128, 128}
     setShadowText(machineKey, machineText, table.unpack(machineColor))
 
-    -- 3. 流体数据
-    for i, fluid in ipairs(PROCESSED_FLUIDS) do
+    for _, fluid in ipairs(PROCESSED_FLUIDS) do
         local amount = getFluidAmount(fluid.name)
         local key = "fluid_" .. fluid.name
 
@@ -249,30 +261,19 @@ local function safelyStopMachine(machine)
     return true
 end
 
--- ===== 修正后的参数调整函数 =====
-local function adjustMachineParameters(machine, level, param1, param2)
+-- 统一使用多槽设置（参考代码风格）
+local function adjustMachineParameters(machine, param1, param2)
     if not safelyStopMachine(machine) then
         print("无法停止机器，参数调整取消")
         return false
     end
 
-    local success
-    if level == 1 then
-        -- 等级1：使用 setParameters 设置槽位 0（与参考脚本一致）
-        success = pcall(machine.setParameters, 0, 0, param1) and
-                  pcall(machine.setParameters, 0, 1, param2)
-    else
-        -- 等级2+：多槽（0,2,4,6）
-        success = pcall(machine.setParameters, 0, 0, param1) and
-                  pcall(machine.setParameters, 0, 1, param2) and
-                  pcall(machine.setParameters, 2, 0, param1) and
-                  pcall(machine.setParameters, 2, 1, param2) and
-                  pcall(machine.setParameters, 4, 0, param1) and
-                  pcall(machine.setParameters, 4, 1, param2) and
-                  pcall(machine.setParameters, 6, 0, param1) and
-                  pcall(machine.setParameters, 6, 1, param2)
+    local success = true
+    -- 设置槽位 0,2,4,6 的行星和气体参数
+    for slot = 0, 6, 2 do
+        success = success and pcall(machine.setParameters, slot, 0, param1)
+        success = success and pcall(machine.setParameters, slot, 1, param2)
     end
-
     if success then
         machine.setWorkAllowed(true)
         return true
@@ -281,18 +282,15 @@ local function adjustMachineParameters(machine, level, param1, param2)
         return false
     end
 end
--- ================================
 
 local function adjustAllMachines(param1, param2)
     local successCount = 0
     for i, machine in ipairs(gt_machines) do
-        local address = tostring(machine.address)
-        local level = machineLevels[address] or 1
-        if adjustMachineParameters(machine, level, param1, param2) then
+        if adjustMachineParameters(machine, param1, param2) then
             successCount = successCount + 1
-            print(string.format("机器 %d (等级 %d) 参数调整成功", i, level))
+            print(string.format("机器 %d 参数调整成功", i))
         else
-            print(string.format("机器 %d (等级 %d) 参数调整失败", i, level))
+            print(string.format("机器 %d 参数调整失败", i))
         end
     end
     return successCount
@@ -300,6 +298,7 @@ end
 
 -- ==================== 维持逻辑 ====================
 
+-- 寻找需要补充的流体（按优先级）
 local function findFluidToRefill()
     for _, fluid in ipairs(PROCESSED_FLUIDS) do
         local threshold = fluid.threshold
@@ -346,6 +345,32 @@ local function performMaintenance()
     end
 end
 
+-- ==================== 终端信息显示（优化） ====================
+
+-- 以表格形式显示当前各流体库存比例
+local function showFluidStatus()
+    local ratios = getFluidRatios()
+    if #PROCESSED_FLUIDS == 0 then return end
+
+    io.write("\n当前流体库存状态：\n")
+    io.write("名称" .. string.rep(" ", 20) .. "比例\n")
+    for _, fluid in ipairs(PROCESSED_FLUIDS) do
+        local ratio = ratios[fluid.name]
+        local ratioStr
+        if ratio == nil then
+            ratioStr = "断连"
+        elseif ratio >= 1 then
+            ratioStr = "充足 (>100%)"
+        else
+            ratioStr = string.format("%.1f%%", ratio * 100)
+        end
+        local name = fluid.display
+        local pad = 24 - GetUtf8Len(name)
+        io.write(name .. string.rep(" ", pad) .. ratioStr .. "\n")
+    end
+    print()
+end
+
 -- ==================== 初始化 ====================
 
 -- 处理流体配置
@@ -354,7 +379,7 @@ for _, config in ipairs(FLUID_CONFIGS) do
     local thresholdRaw = config[2]
     local param1 = config[3]
     local param2 = config[4]
-    local display = config[5] or name   -- 若有第五项则使用自定义显示名，否则用注册名
+    local display = config[5] or name
     local threshold
     if type(thresholdRaw) == "string" then
         if thresholdRaw == "-1" then
@@ -374,26 +399,25 @@ for _, config in ipairs(FLUID_CONFIGS) do
     })
 end
 
--- 初始化机器
+-- 自动发现钻机（匹配名称包含 pump 的 gt_machine）
+print("正在扫描太空钻机...")
 if not component.isAvailable("gt_machine") then
     print("警告：未检测到 GT 机器组件，维持功能将不可用")
 else
-    for _, machineInfo in ipairs(MACHINES) do
-        local address = machineInfo[1]
-        local level = machineInfo[2] or 1
-        local success, machine = pcall(component.proxy, address)
-        if success and machine and machine.type == "gt_machine" then
+    local count = 0
+    for address, _ in component.list("gt_machine") do
+        local machine = component.proxy(address)
+        local name = machine.getName() or ""
+        if name:lower():match("pump") or name:lower():match("projectmodulepump") then
             table.insert(gt_machines, machine)
-            machineLevels[address] = level
-            print("找到机器: " .. address .. " (等级 " .. level .. ")")
-        else
-            print("警告: 无法访问机器 " .. address)
+            count = count + 1
+            print(string.format("  发现钻机: %s (%s)", address, name))
         end
     end
-    if #gt_machines == 0 then
-        print("警告：未找到任何可用的太空钻机，维持功能将无效")
+    if count == 0 then
+        print("警告：未找到任何钻机，维持功能将无效")
     else
-        print("成功初始化 " .. #gt_machines .. " 台钻机")
+        print(string.format("成功初始化 %d 台钻机", count))
     end
 end
 
@@ -425,8 +449,10 @@ local function main()
     lastCheckTime = os.time()
 
     while doContinue do
+        -- 刷新眼镜
         updateGlasses()
 
+        -- 检测 ME 连接状态变化
         if meConnected ~= lastStatus then
             if meConnected then
                 print("ME 接口已连接")
@@ -436,9 +462,13 @@ local function main()
             lastStatus = meConnected
         end
 
+        -- 定期执行维持检查
         local now = os.time()
         if now - lastCheckTime >= CHECK_INTERVAL then
             if meConnected then
+                -- 显示当前库存状态（终端）
+                showFluidStatus()
+                -- 执行维持
                 performMaintenance()
             else
                 print("ME 离线，跳过维持检查")
