@@ -6,12 +6,11 @@
     3. 自动发现钻机。
     4. 终端以仪表板形式显示当前状态，展示每个流体的实际库存与阈值。
     5. 所有流体充足且无持续目标时自动关闭钻机。
-    6. 变化率基于实际时间差计算，更准确。
+    6. 变化率基于固定1秒循环计数器计算。
 ]]
 
 local component = require("component")
 local event = require("event")
-local computer = require("computer")
 local os = require("os")
 local term = require("term")
 
@@ -67,11 +66,11 @@ local statusKey = "me_status"
 local machineKey = "machine_count"
 local texts = {}
 local lastAmounts = {}          -- 存储上次的 amount
-local lastUpdateTimes = {}      -- 存储上次更新的 computer.uptime()
+local lastUpdateTimes = {}      -- 存储上次更新的计数器值
 local doContinue = true
-local lastGlassesTime = 0
-local lastCheckTime = 0
-local lastTargetFluid = nil     -- 记录上一次调整的目标流体
+local lastGlassesTime = 0       -- 计数器值
+local lastCheckTime = 0         -- 计数器值
+local lastTargetFluid = nil
 
 local PROCESSED_FLUIDS = {}
 local gt_machines = {}
@@ -173,8 +172,8 @@ local function glassesSetup()
     end
 end
 
--- 修改：接收当前时间 now，用于精确计算变化率
-local function updateGlasses(now)
+-- 接收当前计数器值 counter
+local function updateGlasses(counter)
     if not glasses then return end
     local statusText = meConnected and "ME: 在线" or "ME: 离线"
     local statusColor = meConnected and {85, 255, 85} or {255, 85, 85}
@@ -189,21 +188,20 @@ local function updateGlasses(now)
         local amount = getFluidAmount(fluid.name)
         local key = "fluid_" .. fluid.name
 
-        -- 获取上次记录的值和时间
         local lastAmount = lastAmounts[fluid.name]
         local lastTime = lastUpdateTimes[fluid.name]
         local diff = 0
         if amount ~= nil and lastAmount ~= nil and lastTime ~= nil then
-            local timeDiff = now - lastTime
+            local timeDiff = counter - lastTime
             if timeDiff > 0 then
                 diff = (amount - lastAmount) / timeDiff
             end
         end
 
-        -- 更新记录（即使 amount 为 nil 也不更新，保持上次值用于后续？但为简单，我们仅当 amount 不为 nil 时更新）
+        -- 更新记录（仅当 amount 有效）
         if amount ~= nil then
             lastAmounts[fluid.name] = amount
-            lastUpdateTimes[fluid.name] = now
+            lastUpdateTimes[fluid.name] = counter
         end
 
         local rateText = formatRate(diff)
@@ -270,7 +268,6 @@ local function adjustAllMachines(param1, param2)
     return successCount
 end
 
--- 新增：关闭所有钻机
 local function shutdownAllMachines()
     local count = 0
     for _, machine in ipairs(gt_machines) do
@@ -348,7 +345,7 @@ local function drawDashboard(target, adjustmentMsg)
     print("====================================================================")
 end
 
--- ==================== 执行维持（优化：仅在目标变化时调整） ====================
+-- ==================== 执行维持 ====================
 local function performMaintenance()
     if #gt_machines == 0 then
         drawDashboard(nil, "警告：太空钻机离线，跳过维持检查")
@@ -362,7 +359,6 @@ local function performMaintenance()
     local target = findFluidToRefill()
     local adjustmentMsg = ""
 
-    -- 判断目标是否变化（比较流体名称，允许 nil）
     local targetChanged = false
     if target == nil and lastTargetFluid == nil then
         targetChanged = false
@@ -376,7 +372,6 @@ local function performMaintenance()
 
     if targetChanged then
         if target then
-            -- 有目标：调整钻机参数并启动
             if target.threshold == -1 then
                 adjustmentMsg = string.format("所有常规流体充足，切换至持续获取 %s", target.display)
             else
@@ -392,14 +387,12 @@ local function performMaintenance()
             end
             lastTargetFluid = target
         else
-            -- 无目标：所有流体充足且无持续目标，关闭所有钻机
             adjustmentMsg = "所有流体充足，无目标，正在关闭所有钻机"
             local shutDownCount = shutdownAllMachines()
             adjustmentMsg = adjustmentMsg .. string.format(" | 已关闭 %d 台机器", shutDownCount)
             lastTargetFluid = nil
         end
     else
-        -- 目标未变化，不执行任何操作
         if target then
             adjustmentMsg = string.format("目标未变化，保持当前设置（%s）", target.display)
         else
@@ -481,31 +474,31 @@ local function main()
     event.listen("interrupted", onInterrupted)
 
     local lastStatus = nil
-    lastGlassesTime = computer.uptime()
-    lastCheckTime = computer.uptime()
-    performMaintenance()  -- 首次显示
-    lastCheckTime = computer.uptime()
+    local counter = 0                     -- 自增计数器
+    lastGlassesTime = 0
+    lastCheckTime = 0
+    performMaintenance()                 -- 首次显示
+    lastCheckTime = counter              -- 记录此次执行的时间（0）
 
     while doContinue do
         if meConnected ~= lastStatus then
             lastStatus = meConnected
         end
 
-        local now = computer.uptime()
-
-        -- 眼镜更新（独立计时），传递当前时间 now
-        if glasses and now - lastGlassesTime >= glassesInterval then
-            updateGlasses(now)
-            lastGlassesTime = now
+        -- 眼镜更新
+        if glasses and counter - lastGlassesTime >= glassesInterval then
+            updateGlasses(counter)
+            lastGlassesTime = counter
         end
 
-        -- 维持检查（独立计时）
-        if now - lastCheckTime >= checkInterval then
+        -- 维持检查
+        if counter - lastCheckTime >= checkInterval then
             performMaintenance()
-            lastCheckTime = now
+            lastCheckTime = counter
         end
 
         os.sleep(1)
+        counter = counter + 1             -- 每循环固定增加1秒
     end
 
     event.ignore("interrupted", onInterrupted)
