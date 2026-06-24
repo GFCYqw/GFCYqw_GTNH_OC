@@ -274,9 +274,8 @@ end
 -- ==================== 终端仪表板 ====================
 local function drawDashboard(target, adjustmentMsg)
     term.clear()
-    -- 标题和时间
-    local timeStr = os.date("%Y-%m-%d %H:%M:%S")
-    print(string.format("===== 流体监控与维持系统  [%s] =====", timeStr))
+    -- 标题
+    print(string.format("========== 太空电梯流体监控与维持系统（按 Ctrl+C 退出） =========="))
     print(string.format("ME网络: %s  |  钻机数: %d 台", meConnected and "在线" or "离线", #gt_machines))
     print("----------------------------------------------")
 
@@ -325,11 +324,11 @@ end
 -- ==================== 执行维持 ====================
 local function performMaintenance()
     if #gt_machines == 0 then
-        drawDashboard(nil, "警告：没有可用的太空钻机，维持功能跳过")
+        drawDashboard(nil, "警告：太空钻机离线，跳过维持检查")
         return
     end
     if not meConnected then
-        drawDashboard(nil, "ME 离线，跳过维持检查")
+        drawDashboard(nil, "警告：ME 离线，跳过维持检查")
         return
     end
 
@@ -418,8 +417,8 @@ local function main()
 
     glassesSetup()
     term.clear()
-    print("综合监控与维持系统启动")
-    print(string.format("眼镜刷新间隔: %ds, 维持检查间隔: %ds", updateInterval, CHECK_INTERVAL))
+    print("===== 太空电梯流体监控与维持系统启动 =====")
+    print(string.format("AR 眼镜刷新间隔: %ds, 维持检查间隔: %ds", updateInterval, CHECK_INTERVAL))
     print("按 Ctrl+C 退出")
     print("==================================")
     os.sleep(1)  -- 让用户看到启动信息
