@@ -227,7 +227,9 @@ local function updateGlasses(now)
         end
 
         local rateText = formatRate(diff)
-        local text = string.format("%s: %s mB%s", fluid.display, formatFluidAmount(amount), rateText)
+        -- local text = string.format("%s: %s mB%s", fluid.display, formatFluidAmount(amount), rateText)
+        local text = string.format("%s: %s L%s", fluid.display, formatFluidAmount(amount), rateText)
+
 
         local r, g, b = 255, 255, 255
         if amount == nil then
