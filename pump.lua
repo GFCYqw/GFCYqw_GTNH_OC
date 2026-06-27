@@ -30,36 +30,36 @@ for address in component.list("me_interface") do
 end
 
 -- ==================== 配置 ====================
-local textScale = 1
+local textScale = 0.5
 local offsetX = 3
-local offsetY = 15
-local lineSpacing = 1
+local offsetY = 17
+local lineSpacing = 0.5
 local glassesInterval = 3          -- 眼镜刷新间隔（秒）
 local checkInterval = 30           -- 维持检查间隔（秒）
 
 -- 流体配置：{注册名, 阈值(mB), 行星参数, 气体参数, 显示名}
 local FLUID_CONFIGS = {
     {"liquidair", "1g", 8, 2, "液态空气" },
-    {"fluorine", "4g", 7, 2, "氟" },
-    {"sulfuricacid", "1g", 4, 1, "硫酸" },
-    {"helium", "2g", 5, 4, "氦" },
-    {"oil", "1g", 4, 3, "石油" },
-    {"ic2distilledwater", "1g", 8, 5, "蒸馏水" },
-    {"chlorobenzene", "1g", 2, 1, "氯苯" },
-    {"helium-3", "1g", 5, 2, "氦-3" },
     {"deuterium", "1g", 6, 1, "氘" },
     {"tritium", "1g", 6, 2, "氚" },
-    {"lava", "10m", 3, 3, "熔岩" },
-    {"methane", "10m", 5, 9, "甲烷" },
+    {"fluorine", "4g", 7, 2, "氟" },
+    {"sulfuricacid", "1g", 4, 1, "硫酸" },
+    {"chlorobenzene", "1g", 2, 1, "氯苯" },
+    {"ic2distilledwater", "1g", 8, 5, "蒸馏水" },
+    {"oil", "1g", 4, 3, "石油" },
+    {"helium-3", "1g", 5, 2, "氦-3" },
+    {"helium", "2g", 5, 4, "氦" },
     {"argon", "100m", 5, 7, "氩" },
-    {"radon", "100m", 8, 6, "氡" },
     {"krypton", "10m", 5, 8, "氪" },
     {"xenon", "100m", 6, 4, "氙" },
-    -- {"ethylene", "1g", 6, 5, "乙烯" },
-    -- {"molten.iron", "100m", 4, 2, "熔融铁" },
-    -- {"molten.copper", "100m", 8, 3, "熔融铜" },
-    -- {"molten.tin", "100m", 8, 7, "熔融锡" },
-    -- {"molten.lead", "100m", 4, 5, "熔融铅" }
+    {"radon", "100m", 8, 6, "氡" },
+    {"lava", "10m", 3, 3, "熔岩" },
+    {"ethylene", "1g", 6, 5, "乙烯" },
+    {"methane", "10m", 5, 9, "甲烷" },
+    {"molten.iron", "100m", 4, 2, "熔融铁" },
+    {"molten.copper", "100m", 8, 3, "熔融铜" },
+    {"molten.tin", "100m", 8, 7, "熔融锡" },
+    {"molten.lead", "100m", 4, 5, "熔融铅" },
 }
 
 -- ==================== 内部状态 ====================
@@ -232,14 +232,18 @@ local function updateGlasses(now)
 
 
         local r, g, b = 255, 255, 255
-        if amount == nil then
+                if amount == nil then
             r, g, b = 128, 128, 128
         elseif fluid.threshold and fluid.threshold > 0 and amount < fluid.threshold then
-            r, g, b = 255, 85, 85
+            r, g, b = 255, 85, 85   -- 低于阈值红色（优先）
         else
-            if diff > 0 then r, g, b = 85, 255, 85
-            elseif diff < 0 then r, g, b = 255, 85, 85
-            else r, g, b = 255, 255, 255 end
+            if diff > 0 then
+                r, g, b = 85, 255, 85   -- 增加 → 绿色
+            elseif diff < 0 then
+                r, g, b = 255, 255, 85  -- 减少 → 黄色
+            else
+                r, g, b = 255, 255, 255 -- 不变 → 白色
+            end
         end
         setShadowText(key, text, r, g, b)
     end
