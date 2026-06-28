@@ -46,6 +46,7 @@ local FLUID_CONFIGS = {
     {"fluorine", "4g", 7, 2, "氟" },
     {"sulfuricacid", "1g", 4, 1, "硫酸" },
     {"chlorobenzene", "1g", 2, 1, "氯苯" },
+    {"ammonia", "1g", 6, 3, "氨气" },
     {"ic2distilledwater", "2g", 8, 5, "蒸馏水" },
     {"helium", "2g", 5, 4, "氦" },
     {"argon", "100m", 5, 7, "氩" },
