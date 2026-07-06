@@ -20,6 +20,8 @@
 --      RLE: 每字节 = (value << 6) | (count - 1), value=0-3, count=1-64
 --------------------------------------------------------------------------------
 
+local VERSION = "1.3"
+
 local component = require("component")
 local computer = require("computer")
 local event = require("event")
@@ -196,6 +198,7 @@ local function printBanner()
     print("  ╔══════════════════════════════════════╗")
     print("  ║   Bad Apple - 全息投影仪播放器      ║")
     print("  ║   OpenComputers Tier 2 Hologram     ║")
+    print("  ║   v" .. VERSION .. string.rep(" ", 31 - #VERSION) .. "║")
     print("  ╚══════════════════════════════════════╝")
     print("")
 end
