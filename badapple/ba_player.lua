@@ -171,7 +171,8 @@ local function renderFrame(frame, prevFrame, zLevel)
 
         if newVal ~= oldVal then
             local x = (pos - 1) % WIDTH
-            local y = math.floor((pos - 1) / WIDTH)
+            -- Y 轴翻转: 图像第0行(顶部) -> 全息Y=31(顶部), 图像第31行(底部) -> 全息Y=0
+            local y = (HEIGHT - 1) - math.floor((pos - 1) / WIDTH)
 
             if newVal == 0 then
                 hologram.set(x, y, zLevel, false)
