@@ -339,47 +339,6 @@ end
 -- 主函数
 --------------------------------------------------------------------------------
 
-local function resolvePath(dataPath)
-    --[[
-    解析数据文件路径。
-    1. 如果是绝对路径, 直接返回
-    2. 否则尝试相对于脚本目录
-    3. 最后回退到当前工作目录
-    ]]
-    if fs.isAbsolute and fs.isAbsolute(dataPath) then
-        return dataPath
-    end
-
-    -- 获取脚本所在目录
-    local scriptDir = ""
-    local hasFs = (fs.concat ~= nil)
-
-    if hasFs then
-        local ok, info = pcall(function() return debug.getinfo(2, "S") end)
-        if ok and info and info.source then
-            local src = info.source
-            -- debug.getinfo 返回 "@路径" 或 "路径"
-            if src:sub(1, 1) == "@" then
-                src = src:sub(2)
-            end
-            local dir = fs.path(src)
-            if dir and dir ~= "" then
-                scriptDir = dir
-            end
-        end
-    end
-
-    if scriptDir ~= "" and hasFs then
-        local candidate = fs.concat(scriptDir, dataPath)
-        if fs.exists(candidate) then
-            return candidate
-        end
-    end
-
-    -- 回退: 当前工作目录
-    return dataPath
-end
-
 local function main(args)
     printBanner()
 
@@ -389,30 +348,27 @@ local function main(args)
         dataPath = args[1]
     end
 
-    dataPath = resolvePath(dataPath)
-
     print("  数据文件: " .. dataPath)
 
-    -- 检查文件存在
-    if fs.exists and not fs.exists(dataPath) then
-        print("\n[错误] 找不到数据文件: " .. dataPath)
-        print("  请先运行 PC 端预处理脚本: python extract_frames.py <视频>")
-        print("  或生成测试图案: python extract_frames.py --test")
-        return
-    end
-
-    -- 获取文件大小 (尝试)
-    if fs.size then
-        local fileSize = fs.size(dataPath)
-        print(string.format("  文件大小: %d 字节 (%.1f KB)", fileSize, fileSize / 1024))
-    end
-
-    -- 打开文件
+    -- 直接尝试打开 (OC 的 io.open 可以正确处理相对/绝对路径)
     local file, err = io.open(dataPath, "rb")
     if not file then
-        print("\n[错误] 无法打开文件: " .. tostring(err))
+        print("\n[错误] 无法打开: " .. dataPath)
+        print("  " .. tostring(err))
+        print("  请确保文件在当前目录, 或使用绝对路径:")
+        print("    ba_player /home/badapple/ba_frames.bin")
         return
     end
+
+    -- 可选: 显示文件大小
+    pcall(function()
+        if fs.size then
+            local sz = fs.size(dataPath)
+            if sz then
+                print(string.format("  文件大小: %d 字节 (%.1f KB)", sz, sz / 1024))
+            end
+        end
+    end)
 
     -- 读取头信息
     local meta, err = readHeader(file)
