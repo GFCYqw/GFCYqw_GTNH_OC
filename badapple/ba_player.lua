@@ -1,7 +1,7 @@
 --------------------------------------------------------------------------------
 --  Bad Apple - 全息投影仪播放器 (Tier 2)
 --  ======================================
---  读取预处理后的 .bin 文件, 在 XZ 平面 (Y=16) 上逐帧渲染全息动画。
+--  读取预处理后的 .bin 文件, 在 XY 平面 (Z=24) 上逐帧渲染全息动画。
 --
 --  用法:
 --      将 ba_frames.bin 放在与本脚本相同的目录下, 然后运行:
@@ -46,8 +46,8 @@ hologram = component.hologram
 local CONFIG = {
     -- 默认数据文件路径 (相对于脚本目录)
     dataFile   = "ba_frames.bin",
-    -- 投影平面 Y 坐标 (0-31)
-    yLevel     = 16,
+    -- 投影平面 Z 坐标 (0-47, XY 平面, 24=居中)
+    zLevel     = 24,
     -- 缩放比例 (0.33 ~ 3.0)
     scale      = 2.0,
     -- 调色板 (索引 1/2/3, Tier 2 支持)
@@ -157,9 +157,10 @@ end
 -- 渲染
 --------------------------------------------------------------------------------
 
-local function renderFrame(frame, prevFrame, yLevel)
+local function renderFrame(frame, prevFrame, zLevel)
     --[[
     Delta 渲染: 只更新与上一帧不同的体素。
+    XY 平面投影 (Z 固定): pos -> (x, y) = (pos % 48, pos / 48)
     返回渲染的体素数。
     ]]
     local count = 0
@@ -170,12 +171,12 @@ local function renderFrame(frame, prevFrame, yLevel)
 
         if newVal ~= oldVal then
             local x = (pos - 1) % WIDTH
-            local z = math.floor((pos - 1) / WIDTH)
+            local y = math.floor((pos - 1) / WIDTH)
 
             if newVal == 0 then
-                hologram.set(x, yLevel, z, false)
+                hologram.set(x, y, zLevel, false)
             else
-                hologram.set(x, yLevel, z, newVal)
+                hologram.set(x, y, zLevel, newVal)
             end
 
             prevFrame[pos] = newVal
@@ -290,7 +291,7 @@ local function playLoop(file, offsets, meta)
         local frame = decodeFrame(rleData, frameLen)
 
         -- 渲染 (delta)
-        local changes = renderFrame(frame, prevFrame, CONFIG.yLevel)
+        local changes = renderFrame(frame, prevFrame, CONFIG.zLevel)
         totalChanges = totalChanges + changes
 
         -- 帧率控制
