@@ -20,7 +20,7 @@
 --      RLE: 每字节 = (value << 6) | (count - 1), value=0-3, count=1-64
 --------------------------------------------------------------------------------
 
-local VERSION = "1.4"
+local VERSION = "1.5"
 
 local component = require("component")
 local computer = require("computer")
@@ -297,6 +297,13 @@ local function playLoop(file, offsets, meta)
         -- 解码
         local frame = decodeFrame(rleData, frameLen)
 
+        -- 强制重绘 (flip 切换后需要清空状态)
+        if CONFIG._forceRedraw then
+            hologram.clear()
+            for j = 1, TOTAL_VOXELS do prevFrame[j] = 0 end
+            CONFIG._forceRedraw = false
+        end
+
         -- 渲染 (delta)
         local changes = renderFrame(frame, prevFrame, CONFIG.zLevel)
         totalChanges = totalChanges + changes
@@ -359,6 +366,7 @@ local function main(args)
     -- 命令行切换 Y 轴翻转: ba_player ba_frames.bin flip
     if args and #args >= 2 and args[2] == "flip" then
         CONFIG.flipY = not CONFIG.flipY
+        CONFIG._forceRedraw = true
         print("  [参数] Y轴翻转已切换为: " .. (CONFIG.flipY and "开" or "关"))
     end
 
