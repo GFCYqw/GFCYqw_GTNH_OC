@@ -20,7 +20,7 @@
 --      RLE: 每字节 = (value << 6) | (count - 1), value=0-3, count=1-64
 --------------------------------------------------------------------------------
 
-local VERSION = "1.5"
+local VERSION = "1.6"
 
 local component = require("component")
 local computer = require("computer")
@@ -60,8 +60,6 @@ local CONFIG = {
     },
     -- 是否自动循环播放
     loop       = false,
-    -- Y 轴翻转: true=图像顶行→全息顶部, false=图像顶行→全息底部
-    flipY      = false,
 }
 
 -- 全息投影分辨率常量
@@ -176,7 +174,7 @@ local function renderFrame(frame, prevFrame, zLevel)
         if newVal ~= oldVal then
             local x = (pos - 1) % WIDTH
             local row = math.floor((pos - 1) / WIDTH)
-            local y = CONFIG.flipY and ((HEIGHT - 1) - row) or row
+            local y = (HEIGHT - 1) - row  -- Y轴翻转: 图像顶行→全息顶部
 
             if newVal == 0 then
                 hologram.set(x, y, zLevel, false)
@@ -251,7 +249,6 @@ local function initHologram()
     print(string.format("    颜色 2: 0x%06X (浅灰)", CONFIG.palette[2]))
     print(string.format("    颜色 3: 0x%06X (白色)", CONFIG.palette[3]))
     print(string.format("  缩放: %.1fx", CONFIG.scale))
-    print(string.format("  Y轴翻转: %s (修改 CONFIG.flipY 切换)", CONFIG.flipY and "是" or "否"))
 end
 
 --------------------------------------------------------------------------------
@@ -296,13 +293,6 @@ local function playLoop(file, offsets, meta)
 
         -- 解码
         local frame = decodeFrame(rleData, frameLen)
-
-        -- 强制重绘 (flip 切换后需要清空状态)
-        if CONFIG._forceRedraw then
-            hologram.clear()
-            for j = 1, TOTAL_VOXELS do prevFrame[j] = 0 end
-            CONFIG._forceRedraw = false
-        end
 
         -- 渲染 (delta)
         local changes = renderFrame(frame, prevFrame, CONFIG.zLevel)
@@ -361,13 +351,6 @@ local function main(args)
     local dataPath = CONFIG.dataFile
     if args and #args > 0 and args[1] ~= "" then
         dataPath = args[1]
-    end
-
-    -- 命令行切换 Y 轴翻转: ba_player ba_frames.bin flip
-    if args and #args >= 2 and args[2] == "flip" then
-        CONFIG.flipY = not CONFIG.flipY
-        CONFIG._forceRedraw = true
-        print("  [参数] Y轴翻转已切换为: " .. (CONFIG.flipY and "开" or "关"))
     end
 
     print("  数据文件: " .. dataPath)
