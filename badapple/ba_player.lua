@@ -8,6 +8,8 @@
 --          ba_player
 --      或指定文件路径:
 --          ba_player /path/to/ba_frames.bin
+--      可选指定音频文件:
+--          ba_player ba_frames.bin ba_audio.bin
 --
 --  依赖:
 --      - Tier 2 全息投影仪 (component.hologram)
@@ -20,7 +22,7 @@
 --      RLE: 每字节 = (value << 6) | (count - 1), value=0-3, count=1-64
 --------------------------------------------------------------------------------
 
-local VERSION = "1.6"
+local VERSION = "2.1"
 
 local component = require("component")
 local computer = require("computer")
@@ -41,13 +43,20 @@ if not holoOk then
 end
 hologram = component.hologram
 
+-- 安全获取 Iron Note Block (可选)
+local ironNote = nil
+pcall(function() ironNote = component.iron_note_block end)
+local hasAudio = (ironNote ~= nil)
+
 --------------------------------------------------------------------------------
 -- 配置
 --------------------------------------------------------------------------------
 
 local CONFIG = {
-    -- 默认数据文件路径 (相对于脚本目录)
+    -- 默认数据文件路径
     dataFile   = "ba_frames.bin",
+    -- 音频文件路径 (可选, Iron Note Block 需要)
+    audioFile  = "ba_audio.bin",
     -- 投影平面 Z 坐标 (0-47, XY 平面, 24=居中)
     zLevel     = 24,
     -- 缩放比例 (0.33 ~ 3.0)
@@ -115,6 +124,56 @@ local function readOffsetTable(file, frameCount)
     end
 
     return offsets
+end
+
+--------------------------------------------------------------------------------
+-- 音频数据读取
+--------------------------------------------------------------------------------
+
+local function loadAudioData(audioPath, expectedFrames)
+    --[[
+    读取 ba_audio.bin, 返回 frame_notes[1..frames] 数组。
+    每帧: nil=静音, {instrument, note}=播放音符
+    ]]
+    local f, err = io.open(audioPath, "rb")
+    if not f then
+        return nil, err
+    end
+
+    local header = f:read(11)
+    if not header or #header < 11 then
+        f:close()
+        return nil, "音频文件头不完整"
+    end
+
+    local magic, version, frames, fps, reserved =
+        string.unpack("<c4BIBB", header)
+
+    if magic ~= "BAAU" then
+        f:close()
+        return nil, "无效的音频格式"
+    end
+
+    local raw = f:read(frames)
+    f:close()
+
+    if not raw or #raw < frames then
+        return nil, "音频数据不完整"
+    end
+
+    local notes = {}
+    local count = 0
+    for i = 1, frames do
+        local byte = string.byte(raw, i)
+        if byte ~= 0 then
+            local instrument = byte >> 5
+            local note = byte & 0x1F
+            notes[i] = { instrument = instrument, note = note }
+            count = count + 1
+        end
+    end
+
+    return { notes = notes, frames = frames, count = count, fps = fps }
 end
 
 --------------------------------------------------------------------------------
@@ -249,16 +308,27 @@ local function initHologram()
     print(string.format("    颜色 2: 0x%06X (浅灰)", CONFIG.palette[2]))
     print(string.format("    颜色 3: 0x%06X (白色)", CONFIG.palette[3]))
     print(string.format("  缩放: %.1fx", CONFIG.scale))
+    if hasAudio then
+        print("  Iron Note Block: 已检测到")
+    end
 end
 
 --------------------------------------------------------------------------------
 -- 主播放循环
 --------------------------------------------------------------------------------
 
-local function playLoop(file, offsets, meta)
+local function playLoop(file, offsets, meta, audio)
     local fps = meta.fps
     local frameCount = meta.frames
     local frameTime = 1.0 / fps
+
+    -- 音频数据
+    local audioNotes = nil
+    local audioCount = 0
+    if audio then
+        audioNotes = audio.notes
+        audioCount = audio.count
+    end
 
     -- 前一帧状态 (用于 delta 渲染)
     local prevFrame = {}
@@ -298,6 +368,13 @@ local function playLoop(file, offsets, meta)
         local changes = renderFrame(frame, prevFrame, CONFIG.zLevel)
         totalChanges = totalChanges + changes
 
+        -- 播放音频
+        if audioNotes and audioNotes[i] and ironNote then
+            pcall(function()
+                ironNote.playNote(audioNotes[i].instrument, audioNotes[i].note)
+            end)
+        end
+
         -- 帧率控制
         local elapsed = computer.uptime() - startTime
         local target = i * frameTime
@@ -326,6 +403,9 @@ local function playLoop(file, offsets, meta)
         formatTime(totalTime),
         math.min(frameCount, #offsets) / totalTime))
     print(string.format("  总更新体素: %d (每帧平均 %.0f)", totalChanges, totalChanges / frameCount))
+    if audioCount > 0 then
+        print(string.format("  播放音符:   %d", audioCount))
+    end
 end
 
 --------------------------------------------------------------------------------
@@ -351,6 +431,11 @@ local function main(args)
     local dataPath = CONFIG.dataFile
     if args and #args > 0 and args[1] ~= "" then
         dataPath = args[1]
+    end
+
+    -- 第二参数: 音频文件路径 (可选)
+    if args and #args >= 2 and args[2] ~= "" then
+        CONFIG.audioFile = args[2]
     end
 
     print("  数据文件: " .. dataPath)
@@ -386,6 +471,20 @@ local function main(args)
     print(string.format("  帧数: %d | FPS: %d | 时长: %.1f 秒",
         meta.frames, meta.fps, meta.frames / meta.fps))
 
+    -- 尝试加载音频
+    local audio = nil
+    if hasAudio then
+        local audioPath = CONFIG.audioFile
+        -- 尝试相对于视频文件所在目录
+        local audioOk, audioData = pcall(loadAudioData, audioPath, meta.frames)
+        if audioOk and audioData then
+            audio = audioData
+            print(string.format("  音频: %d 音符 | 文件: %s", audio.count, audioPath))
+        else
+            print("  音频: 未加载 (" .. tostring(audioData) .. ")")
+        end
+    end
+
     -- 读取偏移表
     local offsets, err = readOffsetTable(file, meta.frames)
     if not offsets then
@@ -398,7 +497,7 @@ local function main(args)
     initHologram()
 
     -- 开始播放
-    local ok, errMsg = pcall(playLoop, file, offsets, meta)
+    local ok, errMsg = pcall(playLoop, file, offsets, meta, audio)
 
     -- 清理
     cleanup(file)
