@@ -22,7 +22,7 @@
 --      RLE: 每字节 = (value << 6) | (count - 1), value=0-3, count=1-64
 --------------------------------------------------------------------------------
 
-local VERSION = "2.4"
+local VERSION = "3.0"
 
 local component = require("component")
 local computer = require("computer")
@@ -43,38 +43,41 @@ if not holoOk then
 end
 hologram = component.hologram
 
--- 安全获取音频设备 (Computronics Noise Card / Sound Card)
+-- 音频播放方式 (优先级: tape_drive > noise > sound)
 local audioDevice = nil
-local audioType = nil  -- "noise" or "sound"
+local audioType = nil  -- "tape", "noise", "sound"
 
--- Noise Card: play({{freq, duration}, ...})
-local function tryNoiseCard()
-    local ok, dev = pcall(function() return component.noise end)
-    if ok and dev then return dev, "noise" end
+-- 1. Tape Drive (完整原声音频, 最佳)
+local tapeOk, tapeDev = pcall(function() return component.tape_drive end)
+if tapeOk and tapeDev then
+    audioDevice = tapeDev
+    audioType = "tape"
+    print("[音频] 检测到 Tape Drive (原声音频)")
 end
 
--- Sound Card: setFrequency + open + delay + close + process
-local function trySoundCard()
-    local ok, dev = pcall(function() return component.sound end)
-    if ok and dev then return dev, "sound" end
-end
-
-audioDevice, audioType = tryNoiseCard()
+-- 2. Noise Card
 if not audioDevice then
-    audioDevice, audioType = trySoundCard()
+    local ok, dev = pcall(function() return component.noise end)
+    if ok and dev then
+        audioDevice = dev
+        audioType = "noise"
+        print("[音频] 检测到 Noise Card (旋律)")
+    end
+end
+
+-- 3. Sound Card
+if not audioDevice then
+    local ok, dev = pcall(function() return component.sound end)
+    if ok and dev then
+        audioDevice = dev
+        audioType = "sound"
+        print("[音频] 检测到 Sound Card (旋律)")
+    end
 end
 
 local hasAudio = (audioDevice ~= nil)
-if hasAudio then
-    print("[音频] 检测到: " .. audioType .. " 卡")
-else
-    print("[音频] 未检测到 Noise/Sound 卡, 将仅播放画面")
-    print("[音频] 可用组件:")
-    pcall(function()
-        for addr, ctype in component.list() do
-            print("  " .. ctype)
-        end
-    end)
+if not hasAudio then
+    print("[音频] 无音频设备, 仅播放画面")
 end
 
 -- 音符 → 频率 (Iron Note 0 = C4 = 261.63Hz)
@@ -154,8 +157,10 @@ end
 local CONFIG = {
     -- 默认数据文件路径
     dataFile   = "ba_frames.bin",
-    -- 音频文件路径 (可选, Iron Note Block 需要)
+    -- 音频文件路径 (可选)
     audioFile  = "ba_audio.bin",
+    -- DFPWM 磁带文件路径 (Tape Drive 用)
+    tapeFile   = "ba_audio.dfpwm",
     -- 投影平面 Z 坐标 (0-47, XY 平面, 24=居中)
     zLevel     = 24,
     -- 缩放比例 (0.33 ~ 3.0)
@@ -413,6 +418,71 @@ local function initHologram()
 end
 
 --------------------------------------------------------------------------------
+-- 磁带初始化
+--------------------------------------------------------------------------------
+
+local function initTape(tapePath, totalFrames, fps)
+    --[[
+    写入 DFPWM 数据到磁带 (仅首次).
+    返回 true 表示磁带就绪.
+    ]]
+    if not audioDevice or audioType ~= "tape" then
+        return false
+    end
+
+    local tape = audioDevice
+
+    -- 检查磁带是否已有数据 (避免重复写入)
+    local tapeSize = 0
+    pcall(function() tapeSize = tape.getSize() end)
+
+    if tapeSize > 0 then
+        print(string.format("  磁带已有数据: %d 字节, 跳过写入", tapeSize))
+        tape.seek(-tapeSize)
+        tape.stop()
+        return true
+    end
+
+    -- 读取 DFPWM 文件
+    local f, err = io.open(tapePath, "rb")
+    if not f then
+        print("  [警告] 找不到磁带文件: " .. tapePath .. " (" .. tostring(err) .. ")")
+        return false
+    end
+
+    local data = f:read("*a")
+    f:close()
+
+    if not data or #data == 0 then
+        print("  [警告] 磁带文件为空")
+        return false
+    end
+
+    print(string.format("  写入磁带: %d 字节...", #data))
+
+    -- 写入磁带 (分块写入)
+    tape.stop()
+    tape.seek(-tape.getSize())  -- 倒带到头
+    tape.stop()
+
+    local chunkSize = 8192
+    local written = 0
+    for i = 1, #data, chunkSize do
+        local chunk = data:sub(i, i + chunkSize - 1)
+        pcall(function() tape.write(chunk) end)
+        written = written + #chunk
+    end
+
+    -- 停止写入, 定位到开头
+    tape.stop()
+    tape.seek(-tape.getSize())
+    tape.stop()
+
+    print(string.format("  磁带就绪: %d 字节", written))
+    return true
+end
+
+--------------------------------------------------------------------------------
 -- 主播放循环
 --------------------------------------------------------------------------------
 
@@ -421,10 +491,11 @@ local function playLoop(file, offsets, meta, audio)
     local frameCount = meta.frames
     local frameTime = 1.0 / fps
 
-    -- 音频数据
+    -- 音频数据 (Noise/Sound 卡用)
     local audioNotes = nil
     local audioCount = 0
-    if audio then
+    local useTape = (audioType == "tape")
+    if audio and not useTape then
         audioNotes = audio.notes
         audioCount = audio.count
     end
@@ -467,8 +538,15 @@ local function playLoop(file, offsets, meta, audio)
         local changes = renderFrame(frame, prevFrame, CONFIG.zLevel)
         totalChanges = totalChanges + changes
 
-        -- 播放音频 (缓冲批量发送，避免断裂)
-        if audioNotes and audioDevice then
+        -- 播放音频
+        if useTape then
+            -- Tape Drive: 第一帧启动, 之后自动播放
+            if i == 1 then
+                pcall(function()
+                    audioDevice.play()
+                end)
+            end
+        elseif audioNotes then
             pcall(playAudioFrame, audioNotes, i, fps)
         end
 
@@ -502,6 +580,10 @@ local function playLoop(file, offsets, meta, audio)
     print(string.format("  总更新体素: %d (每帧平均 %.0f)", totalChanges, totalChanges / frameCount))
     if audioCount > 0 then
         print(string.format("  播放音符:   %d", audioCount))
+    end
+    if useTape and audioDevice then
+        pcall(function() audioDevice.stop() end)
+        print("  磁带已停止")
     end
 end
 
@@ -568,17 +650,33 @@ local function main(args)
     print(string.format("  帧数: %d | FPS: %d | 时长: %.1f 秒",
         meta.frames, meta.fps, meta.frames / meta.fps))
 
-    -- 尝试加载音频
+    -- 尝试加载音频 (Tape Drive 或 Noise/Sound 卡)
     local audio = nil
     if hasAudio then
-        local audioPath = CONFIG.audioFile
-        -- 尝试相对于视频文件所在目录
-        local audioOk, audioData = pcall(loadAudioData, audioPath, meta.frames)
-        if audioOk and audioData then
-            audio = audioData
-            print(string.format("  音频: %d 音符 | 文件: %s", audio.count, audioPath))
+        if audioType == "tape" then
+            -- Tape Drive: 写入 DFPWM 数据
+            local tapePath = CONFIG.tapeFile
+            -- 第二参数可指定磁带文件: ba_player frames.bin tape.dfpwm
+            if args and #args >= 2 and args[2] ~= "" then
+                tapePath = args[2]
+            end
+            local tapeReady = initTape(tapePath, meta.frames, meta.fps)
+            if tapeReady then
+                print(string.format("  音频: Tape Drive | 文件: %s", tapePath))
+            end
         else
-            print("  音频: 未加载 (" .. tostring(audioData) .. ")")
+            -- Noise/Sound 卡
+            local audioPath = CONFIG.audioFile
+            if args and #args >= 2 and args[2] ~= "" then
+                audioPath = args[2]
+            end
+            local audioOk, audioData = pcall(loadAudioData, audioPath, meta.frames)
+            if audioOk and audioData then
+                audio = audioData
+                print(string.format("  音频: %d 音符 | 文件: %s", audio.count, audioPath))
+            else
+                print("  音频: 未加载 (" .. tostring(audioData) .. ")")
+            end
         end
     end
 
