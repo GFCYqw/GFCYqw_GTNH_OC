@@ -9,7 +9,7 @@
 --      ba_player                 使用默认文件
 --------------------------------------------------------------------------------
 
-local VERSION = "5.0"
+local VERSION = "5.2"
 
 local component = require("component")
 local computer = require("computer")
@@ -51,7 +51,7 @@ local CONFIG = {
     zLevel     = 24,
     -- 缩放比例 (0.33 ~ 3.0)
     scale      = 2.0,
-    -- 调色板 (索引 1/2/3, Tier 2 支持)
+    -- 调色板 (Tier 2)
     palette    = {
         [1] = 0x555555,  -- 深灰
         [2] = 0xAAAAAA,  -- 浅灰
@@ -196,9 +196,9 @@ end
 local function printBanner()
     print("")
     print("  ╔══════════════════════════════════════╗")
-    print("  ║   Bad Apple - 全息投影仪播放器      ║")
-    print("  ║   OpenComputers Hologram Player     ║")
-    print("  ║   v" .. VERSION .. string.rep(" ", 31 - #VERSION) .. "║")
+    print("  ║   Bad Apple - 全息投影仪播放器       ║")
+    print("  ║   OpenComputers Hologram Player      ║")
+    print("  ║   v" .. VERSION .. string.rep(" ", 34 - #VERSION) .. "║")
     print("  ╚══════════════════════════════════════╝")
     print("")
 end
@@ -228,26 +228,12 @@ local function initHologram()
 
     -- 缩放
     hologram.setScale(CONFIG.scale)
-
-    -- 调色板 (尝试设置 3 色, Tier 1 会自动忽略多余的)
-    local depth = hologram.maxDepth()
-    print(string.format("  全息投影仪色深: %d", depth))
-
-    for idx = 1, 3 do
-        local color = CONFIG.palette[idx]
-        if color then
-            pcall(function() hologram.setPaletteColor(idx, color) end)
-        end
-    end
-
-    -- 偏移归零
+    hologram.setPaletteColor(1, CONFIG.palette[1])
+    hologram.setPaletteColor(2, CONFIG.palette[2])
+    hologram.setPaletteColor(3, CONFIG.palette[3])
     hologram.setTranslation(0, 0, 0)
 
-    print("  调色板已设置:")
-    print(string.format("    颜色 1: 0x%06X (深灰)", CONFIG.palette[1]))
-    print(string.format("    颜色 2: 0x%06X (浅灰)", CONFIG.palette[2]))
-    print(string.format("    颜色 3: 0x%06X (白色)", CONFIG.palette[3]))
-    print(string.format("  缩放: %.1fx", CONFIG.scale))
+    print(string.format("  缩放: %.1fx | 调色板: 3 色", CONFIG.scale))
 end
 
 --------------------------------------------------------------------------------
@@ -273,10 +259,18 @@ local function initTape(tapePath)
 
     print(string.format("  写入磁带: %d 字节...", #data))
 
-    pcall(function() tape.stop() end)
+    -- 停止 + 倒带到开头 (清空旧内容)
+    pcall(function()
+        tape.stop()
+        tape.seek(-tape.getSize())
+        tape.stop()
+    end)
     os.sleep(0.1)
 
-    -- 分块写入, 记录实际写入字节数
+    -- 设置标签
+    pcall(function() tape.setLabel("Bad Apple") end)
+
+    -- 写入数据 (从位置 0 开始覆盖)
     local chunkSize = 8192
     local written = 0
     for i = 1, #data, chunkSize do
@@ -285,7 +279,12 @@ local function initTape(tapePath)
         written = written + #chunk
     end
 
-    -- 回退到开头: seek(-实际写入量)
+    -- 写入 2 秒静音 (防止结束后播放旧数据)
+    local silence = string.rep("\0", 8192)
+    pcall(function() tape.write(silence) end)
+    written = written + 8192
+
+    -- 回退到开头
     pcall(function()
         tape.stop()
         tape.seek(-written)
@@ -293,7 +292,9 @@ local function initTape(tapePath)
     end)
     os.sleep(0.1)
 
-    print(string.format("  磁带就绪 (%d 字节)", written))
+    local label = ""
+    pcall(function() label = tape.getLabel() end)
+    print(string.format("  磁带就绪: %d 字节, 标签: %s", written, label))
     return true
 end
 

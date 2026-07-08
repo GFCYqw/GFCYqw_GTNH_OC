@@ -42,7 +42,7 @@ ba_player write [dfpwm文件]        -- 写入音频到磁带
 
 | 设备 | 用途 | 模组 |
 |---|---|---|
-| 全息投影仪 (Tier 1/2) | 48×32 画面 | OpenComputers |
+| 全息投影仪 (Tier 2) | 48×32 画面 | OpenComputers |
 | 电脑 | 运行播放器 | OpenComputers |
 | Tape Drive + 磁带 | 原声音频 (可选) | Computronics |
 
