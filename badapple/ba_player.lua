@@ -4,12 +4,11 @@
 --  XY 平面 (Z=24) 逐帧渲染 RLE 全息动画, Tape Drive 原声音频。
 --
 --  用法:
---      ba_player write [dfpwm]   写入音频到磁带
---      ba_player [frames]        播放全息 + 磁带
---      ba_player                 使用默认文件
+--      ba_player [--scale=N] [--volume=N] [文件]
+--      ba_player write [文件]
 --------------------------------------------------------------------------------
 
-local VERSION = "5.2"
+local VERSION = "5.3"
 
 local component = require("component")
 local computer = require("computer")
@@ -51,6 +50,8 @@ local CONFIG = {
     zLevel     = 24,
     -- 缩放比例 (0.33 ~ 3.0)
     scale      = 2.0,
+    -- 磁带音量 (0.0 ~ 1.0)
+    volume     = 1.0,
     -- 调色板 (Tier 2)
     palette    = {
         [1] = 0x555555,  -- 深灰
@@ -325,8 +326,11 @@ local function playLoop(file, offsets, meta, useTape)
             tape.stop()
         end)
         os.sleep(0.05)
-        pcall(function() tape.play() end)
-        os.sleep(0.30)  -- 补偿磁带驱动器缓冲延迟 (~0.25s)
+        pcall(function()
+            tape.setVolume(CONFIG.volume)
+            tape.play()
+        end)
+        os.sleep(0.30)
     end
     print("  按 Ctrl+C 停止播放\n")
 
@@ -402,35 +406,68 @@ local function cleanup(file)
 end
 
 --------------------------------------------------------------------------------
+-- 参数解析
+--------------------------------------------------------------------------------
+
+local function parseArgs(args)
+    --[[
+    解析命令行参数, 格式: [命令] [--key=value ...] [文件]
+    返回: { cmd, file, scale, volume }
+    ]]
+    local result = { cmd = "play", file = nil, scale = nil, volume = nil }
+
+    for i = 1, #args do
+        local a = args[i]
+
+        -- 子命令
+        if a == "write" then
+            result.cmd = "write"
+        elseif a == "play" then
+            result.cmd = "play"
+
+        -- 选项 --key=value
+        elseif a:sub(1, 2) == "--" then
+            local eq = a:find("=")
+            if eq then
+                local key = a:sub(3, eq - 1)
+                local val = a:sub(eq + 1)
+                if key == "scale" then
+                    result.scale = tonumber(val)
+                elseif key == "volume" then
+                    result.volume = tonumber(val)
+                end
+            end
+
+        -- 位置参数 (文件路径)
+        elseif result.file == nil then
+            result.file = a
+        end
+    end
+
+    return result
+end
+
+--------------------------------------------------------------------------------
 -- 主函数
 --------------------------------------------------------------------------------
 
-local function doWrite(tapePath)
-    --[[
-    子命令: write — 将 DFPWM 文件写入磁带
-    用法: ba_player write [dfpwm文件]
-    ]]
+local function doWrite(parsed)
     if not tape then
         print("[错误] 未检测到 Tape Drive")
         return
     end
-
-    if tapePath and tapePath ~= "" then
-        CONFIG.tapeFile = tapePath
-    end
-
+    if parsed.file then CONFIG.tapeFile = parsed.file end
     print("  写入磁带: " .. CONFIG.tapeFile)
     initTape(CONFIG.tapeFile)
     print("\n  写入完成。使用 'ba_player' 播放。")
 end
 
-local function doPlay(framesPath)
-    --[[
-    子命令: play (默认) — 播放全息视频 + 磁带音频
-    用法: ba_player [frames文件]
-    ]]
-    local dataPath = framesPath or CONFIG.dataFile
+local function doPlay(parsed)
+    -- 应用选项
+    if parsed.scale then CONFIG.scale = parsed.scale end
+    if parsed.volume then CONFIG.volume = parsed.volume end
 
+    local dataPath = parsed.file or CONFIG.dataFile
     print("  数据文件: " .. dataPath)
 
     local file, err = io.open(dataPath, "rb")
@@ -440,14 +477,10 @@ local function doPlay(framesPath)
         return
     end
 
-    pcall(function()
-        if fs.size then
-            local sz = fs.size(dataPath)
-            if sz then
-                print(string.format("  文件大小: %d 字节 (%.1f KB)", sz, sz / 1024))
-            end
-        end
-    end)
+    -- 文件大小 (seek "end" 替代 fs.size)
+    local sz = file:seek("end")
+    file:seek("set")
+    print(string.format("  文件大小: %d 字节 (%.1f KB)", sz, sz / 1024))
 
     local meta, err = readHeader(file)
     if not meta then
@@ -468,13 +501,12 @@ local function doPlay(framesPath)
 
     local useTape = (tape ~= nil)
     if useTape then
-        print("  音频: Tape Drive")
+        print(string.format("  音频: Tape Drive (音量 %.1f)", CONFIG.volume))
     end
 
     initHologram()
 
     local ok, errMsg = pcall(playLoop, file, offsets, meta, useTape)
-
     cleanup(file)
 
     if not ok then
@@ -484,18 +516,12 @@ end
 
 local function main(args)
     printBanner()
+    local parsed = parseArgs(args)
 
-    local cmd = (args and #args > 0 and args[1]) or "play"
-
-    if cmd == "write" then
-        doWrite(args and args[2])
+    if parsed.cmd == "write" then
+        doWrite(parsed)
     else
-        -- 播放模式: 第一个非 "play" 参数是文件路径
-        local filePath = nil
-        if args and #args > 0 and args[1] ~= "play" then
-            filePath = args[1]
-        end
-        doPlay(filePath)
+        doPlay(parsed)
     end
 end
 

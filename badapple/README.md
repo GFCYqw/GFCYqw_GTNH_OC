@@ -13,7 +13,7 @@ wget -f https://github.xutongxin.me/https://raw.githubusercontent.com/GFCYqw/GFC
 wget -f https://github.xutongxin.me/https://raw.githubusercontent.com/GFCYqw/GFCYqw_GTNH_OC/main/badapple/ba_audio.dfpwm
 
 ba_player write ba_audio.dfpwm
-ba_player ba_frames.bin
+ba_player ba_frames.bin --scale=3.0 --volume=0.5
 ```
 
 ## PC 端预处理
@@ -33,34 +33,35 @@ python encode_dfpwm.py "Bad Apple but 4k 60fps.mp4"
 ## 命令
 
 ```lua
-ba_player                          -- 播放 (默认 ba_frames.bin)
-ba_player <文件>                    -- 播放指定文件
-ba_player write [dfpwm文件]        -- 写入音频到磁带
+ba_player                                -- 播放 (默认文件)
+ba_player <文件>                          -- 播放指定文件
+ba_player --scale=3.0 --volume=0.5        -- 缩放 3x, 音量 50%
+ba_player write [文件]                    -- 写入音频到磁带
 ```
 
 ## 硬件
 
-| 设备 | 用途 | 模组 |
-|---|---|---|
-| 全息投影仪 (Tier 2) | 48×32 画面 | OpenComputers |
-| 电脑 | 运行播放器 | OpenComputers |
-| Tape Drive + 磁带 | 原声音频 (可选) | Computronics |
+| 设备                | 用途            | 模组          |
+| ------------------- | --------------- | ------------- |
+| 全息投影仪 (Tier 2) | 48×32 画面     | OpenComputers |
+| 电脑                | 运行播放器      | OpenComputers |
+| Tape Drive + 磁带   | 原声音频 (可选) | Computronics  |
 
 ## 文件
 
-| 文件 | 说明 |
-|---|---|
-| `extract_frames.py` | 视频 → 全息帧 |
-| `encode_dfpwm.py` | 视频 → DFPWM 音频 |
-| `ba_player.lua` | OC 播放器 |
-| `ba_frames.bin` | 全息数据 (~456KB) |
-| `ba_audio.dfpwm` | 音频数据 (~0.84MB) |
+| 文件                  | 说明               |
+| --------------------- | ------------------ |
+| `extract_frames.py` | 视频 → 全息帧     |
+| `encode_dfpwm.py`   | 视频 → DFPWM 音频 |
+| `ba_player.lua`     | OC 播放器          |
+| `ba_frames.bin`     | 全息数据 (~456KB)  |
+| `ba_audio.dfpwm`    | 音频数据 (~0.84MB) |
 
 ## 参数
 
-| 参数 | 值 |
-|---|---|
+| 参数   | 值                     |
+| ------ | ---------------------- |
 | 分辨率 | 48×32 (XY 平面, Z=24) |
-| 色深 | 3 色调色板 |
-| 帧率 | 15 FPS |
-| 音频 | DFPWM 1-bit @ 32768Hz |
+| 色深   | 3 色调色板             |
+| 帧率   | 15 FPS                 |
+| 音频   | DFPWM 1-bit @ 32768Hz  |
