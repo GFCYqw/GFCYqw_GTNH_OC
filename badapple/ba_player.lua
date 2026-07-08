@@ -22,7 +22,7 @@
 --      RLE: 每字节 = (value << 6) | (count - 1), value=0-3, count=1-64
 --------------------------------------------------------------------------------
 
-local VERSION = "2.1"
+local VERSION = "2.2"
 
 local component = require("component")
 local computer = require("computer")
@@ -43,10 +43,31 @@ if not holoOk then
 end
 hologram = component.hologram
 
--- 安全获取 Iron Note Block (可选)
+-- 安全获取 Iron Note Block, 尝试多个可能的组件名
 local ironNote = nil
-pcall(function() ironNote = component.iron_note_block end)
+local function tryComponent(name)
+    local ok, result = pcall(function() return component[name] end)
+    if ok and result then return result end
+end
+for _, name in ipairs({"iron_note_block", "iron_noteblock", "note_block", "noteblock"}) do
+    ironNote = tryComponent(name)
+    if ironNote then
+        print("[音频] 检测到 Iron Note Block: " .. name)
+        break
+    end
+end
 local hasAudio = (ironNote ~= nil)
+if not hasAudio then
+    print("[音频] 未检测到 Iron Note Block, 将仅播放画面")
+    print("[音频] 尝试列出可用组件以排查...")
+    pcall(function()
+        for addr, ctype in component.list() do
+            if ctype:find("note") or ctype:find("sound") or ctype:find("audio") then
+                print("  " .. ctype .. " @ " .. addr)
+            end
+        end
+    end)
+end
 
 --------------------------------------------------------------------------------
 -- 配置
@@ -289,14 +310,14 @@ local function initHologram()
     -- 缩放
     hologram.setScale(CONFIG.scale)
 
-    -- 调色板 (Tier 2)
+    -- 调色板 (尝试设置 3 色, Tier 1 会自动忽略多余的)
     local depth = hologram.maxDepth()
-    print(string.format("  全息投影仪色深: %d (Tier %s)",
-        depth, depth >= 3 and "2" or "1"))
+    print(string.format("  全息投影仪色深: %d", depth))
 
-    for idx, color in pairs(CONFIG.palette) do
-        if idx <= depth then
-            hologram.setPaletteColor(idx, color)
+    for idx = 1, 3 do
+        local color = CONFIG.palette[idx]
+        if color then
+            pcall(function() hologram.setPaletteColor(idx, color) end)
         end
     end
 
