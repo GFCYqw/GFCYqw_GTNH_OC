@@ -1,39 +1,15 @@
 """
-Bad Apple - 全息投影仪预处理脚本
-===================================
-将视频转换为 OpenComputers Tier 2 全息投影仪可播放的压缩格式。
+Bad Apple - 全息帧提取脚本
+===========================
+将视频转换为 OpenComputers 全息投影仪可播放的 RLE 压缩格式。
 
 用法:
-    python extract_frames.py <视频路径> [选项]
+    python extract_frames.py <视频> [选项]
 
 选项:
-    --output, -o     输出 .bin 文件路径 (默认: ba_frames.bin)
+    --output, -o     输出文件 (默认: ba_frames.bin)
     --fps, -f        目标帧率 (默认: 15)
-    --frames-dir     临时帧图片目录 (默认: ./frames_temp)
-    --keep-frames    保留临时帧图片目录
-    --test           生成测试图案而非处理视频
-
-输出格式 (ba_frames.bin):
-    文件头 (11 字节):
-        Magic:   "BAHL"  (4 bytes, char[4])
-        Version: uint8   (1 byte)
-        Frames:  uint32  (4 bytes, little-endian)
-        FPS:     uint8   (1 byte)
-        Reserved: uint8  (1 byte)
-
-    偏移表 (frames * 4 字节):
-        每帧数据的文件偏移量 (uint32 LE)
-
-    帧数据:
-        每帧: [长度 uint16 LE] [RLE 数据...]
-
-    RLE 编码:
-        每字节 = (value << 6) | (count - 1)
-        value: 0-3  (0=关/黑, 1=深灰, 2=浅灰, 3=白)
-        count: 1-64 (实际个数)
-
-扫描顺序: 按行 (Z 方向), 每行从左到右 (X 方向)
-即: position = z * 48 + x
+    --test           生成测试图案 (无需视频)
 """
 
 import argparse
@@ -322,12 +298,6 @@ def main():
         help="输出 .bin 文件路径 (默认: ba_frames.bin)",
     )
     parser.add_argument("--fps", "-f", type=int, default=15, help="目标帧率 (默认: 15)")
-    parser.add_argument(
-        "--frames-dir",
-        default="frames_temp",
-        help="临时帧图片目录 (默认: ./frames_temp)",
-    )
-    parser.add_argument("--keep-frames", action="store_true", help="保留临时帧图片目录")
     parser.add_argument("--test", action="store_true", help="生成测试图案而非处理视频")
 
     args = parser.parse_args()
@@ -346,21 +316,20 @@ def main():
         sys.exit(1)
 
     # 提取帧
-    frame_count = extract_frames_ffmpeg(args.video, args.frames_dir, args.fps)
+    frame_count = extract_frames_ffmpeg(args.video, "frames_temp", args.fps)
 
     if frame_count == 0:
         print("[错误] 未提取到任何帧")
         sys.exit(1)
 
     # 打包
-    build_binary(args.frames_dir, args.output, frame_count, args.fps)
+    build_binary("frames_temp", args.output, frame_count, args.fps)
 
-    # 清理临时文件
-    if not args.keep_frames:
-        import shutil
+    # 清理
+    import shutil
 
-        shutil.rmtree(args.frames_dir)
-        print("[清理] 已删除临时帧图片目录")
+    shutil.rmtree("frames_temp")
+    print("[清理] 已删除临时帧图片目录")
 
 
 if __name__ == "__main__":

@@ -1,25 +1,15 @@
 --------------------------------------------------------------------------------
---  Bad Apple - 全息投影仪播放器 (Tier 2)
---  ======================================
---  读取预处理后的 .bin 文件, 在 XY 平面 (Z=24) 上逐帧渲染全息动画。
+--  Bad Apple - 全息投影仪播放器
+--  =============================
+--  XY 平面 (Z=24) 逐帧渲染 RLE 全息动画, Tape Drive 原声音频。
 --
 --  用法:
---      ba_player write [dfpwm文件]  写入音频到磁带 (仅需一次)
---      ba_player [frames文件]       播放全息视频 + 磁带音频
---      ba_player                    使用默认文件 ba_frames.bin
---
---  依赖:
---      - Tier 2 全息投影仪 (component.hologram)
---      - 预处理后的 ba_frames.bin 文件
---
---  文件格式:
---      文件头 (11B): magic(4B) + version(1B) + frames(4B LE) + fps(1B) + reserved(1B)
---      偏移表 (frames×4B): 每帧数据偏移量 (uint32 LE)
---      帧数据: [长度 uint16 LE] [RLE 字节...]
---      RLE: 每字节 = (value << 6) | (count - 1), value=0-3, count=1-64
+--      ba_player write [dfpwm]   写入音频到磁带
+--      ba_player [frames]        播放全息 + 磁带
+--      ba_player                 使用默认文件
 --------------------------------------------------------------------------------
 
-local VERSION = "4.3"
+local VERSION = "5.0"
 
 local component = require("component")
 local computer = require("computer")
@@ -47,10 +37,6 @@ if tape then
     print("[音频] Tape Drive 已检测到")
 end
 
--- 音符 → 频率 (Iron Note 0 = C4 = 261.63Hz) - 保留以备后用
-local function noteToFreq(note)
-    return 261.63 * 2 ^ (note / 12)
-end
 
 --------------------------------------------------------------------------------
 -- 配置
@@ -211,7 +197,7 @@ local function printBanner()
     print("")
     print("  ╔══════════════════════════════════════╗")
     print("  ║   Bad Apple - 全息投影仪播放器      ║")
-    print("  ║   OpenComputers Tier 2 Hologram     ║")
+    print("  ║   OpenComputers Hologram Player     ║")
     print("  ║   v" .. VERSION .. string.rep(" ", 31 - #VERSION) .. "║")
     print("  ╚══════════════════════════════════════╝")
     print("")
@@ -262,9 +248,6 @@ local function initHologram()
     print(string.format("    颜色 2: 0x%06X (浅灰)", CONFIG.palette[2]))
     print(string.format("    颜色 3: 0x%06X (白色)", CONFIG.palette[3]))
     print(string.format("  缩放: %.1fx", CONFIG.scale))
-    if hasAudio then
-        print("  Speaker: 已检测到")
-    end
 end
 
 --------------------------------------------------------------------------------
@@ -389,7 +372,7 @@ local function playLoop(file, offsets, meta, useTape)
         -- 检查中断
         local evt = event.pull(0)
         if evt == "interrupted" then
-            print("\n\n  [中断] 播放已停止")
+            print("\n  [中断] 播放已停止")
             break
         end
     end

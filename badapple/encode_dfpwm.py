@@ -1,11 +1,11 @@
 """
-Bad Apple - DFPWM 编码器 (aucmp 兼容)
-=======================================
-基于 Ben "GreaseMonkey" Russell 的 DFPWM 参考实现。
-与 Computronics/aucmp 比特级兼容。
+Bad Apple - DFPWM 音频编码器
+=============================
+从视频提取 8-bit signed PCM @ 32768Hz,
+编码为 Computronics Tape Drive 兼容的 DFPWM 格式。
 
 用法:
-  python encode_dfpwm.py <视频文件>
+    python encode_dfpwm.py <视频文件>
 """
 
 import argparse
@@ -35,7 +35,7 @@ def extract_pcm(video_path, output_path):
     print(f"[FFmpeg] PCM ({SAMPLE_RATE}Hz, 8-bit signed)...")
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
-        print(f"失败:\n{r.stderr}")
+        print(f"[错误] FFmpeg 失败:\n{r.stderr}")
         sys.exit(1)
     print(
         f"  {os.path.getsize(output_path):,} 字节 "
@@ -142,7 +142,7 @@ def main():
     args = p.parse_args()
 
     if not os.path.exists(args.video):
-        print(f"找不到: {args.video}")
+        print(f"[错误] 找不到: {args.video}")
         sys.exit(1)
 
     with tempfile.NamedTemporaryFile(suffix=".pcm", delete=False) as t:
