@@ -22,7 +22,7 @@
 --      RLE: 每字节 = (value << 6) | (count - 1), value=0-3, count=1-64
 --------------------------------------------------------------------------------
 
-local VERSION = "2.2"
+local VERSION = "2.3"
 
 local component = require("component")
 local computer = require("computer")
@@ -43,30 +43,43 @@ if not holoOk then
 end
 hologram = component.hologram
 
--- 安全获取 Iron Note Block, 尝试多个可能的组件名
-local ironNote = nil
-local function tryComponent(name)
-    local ok, result = pcall(function() return component[name] end)
-    if ok and result then return result end
+-- 安全获取音频设备 (Computronics Noise Card / Sound Card)
+local audioDevice = nil
+local audioType = nil  -- "noise" or "sound"
+
+-- Noise Card: play({{freq, duration}, ...})
+local function tryNoiseCard()
+    local ok, dev = pcall(function() return component.noise end)
+    if ok and dev then return dev, "noise" end
 end
-for _, name in ipairs({"iron_note_block", "iron_noteblock", "note_block", "noteblock"}) do
-    ironNote = tryComponent(name)
-    if ironNote then
-        print("[音频] 检测到 Iron Note Block: " .. name)
-        break
-    end
+
+-- Sound Card: setFrequency + open + delay + close + process
+local function trySoundCard()
+    local ok, dev = pcall(function() return component.sound end)
+    if ok and dev then return dev, "sound" end
 end
-local hasAudio = (ironNote ~= nil)
-if not hasAudio then
-    print("[音频] 未检测到 Iron Note Block, 将仅播放画面")
-    print("[音频] 尝试列出可用组件以排查...")
+
+audioDevice, audioType = tryNoiseCard()
+if not audioDevice then
+    audioDevice, audioType = trySoundCard()
+end
+
+local hasAudio = (audioDevice ~= nil)
+if hasAudio then
+    print("[音频] 检测到: " .. audioType .. " 卡")
+else
+    print("[音频] 未检测到 Noise/Sound 卡, 将仅播放画面")
+    print("[音频] 可用组件:")
     pcall(function()
         for addr, ctype in component.list() do
-            if ctype:find("note") or ctype:find("sound") or ctype:find("audio") then
-                print("  " .. ctype .. " @ " .. addr)
-            end
+            print("  " .. ctype)
         end
     end)
+end
+
+-- 音符 → 频率 (Iron Note 0 = C4 = 261.63Hz)
+local function noteToFreq(note)
+    return 261.63 * 2 ^ (note / 12)
 end
 
 --------------------------------------------------------------------------------
@@ -390,9 +403,21 @@ local function playLoop(file, offsets, meta, audio)
         totalChanges = totalChanges + changes
 
         -- 播放音频
-        if audioNotes and audioNotes[i] and ironNote then
+        if audioNotes and audioNotes[i] and audioDevice then
+            local freq = noteToFreq(audioNotes[i].note)
             pcall(function()
-                ironNote.playNote(audioNotes[i].instrument, audioNotes[i].note)
+                if audioType == "noise" then
+                    audioDevice.play({{freq, 0.08}})
+                else
+                    -- Sound Card API
+                    audioDevice.setWave(1, 1)  -- sine
+                    audioDevice.setFrequency(1, freq)
+                    audioDevice.setVolume(1, 0.4)
+                    audioDevice.open(1)
+                    audioDevice.delay(80)
+                    audioDevice.close(1)
+                    audioDevice.process()
+                end
             end)
         end
 
