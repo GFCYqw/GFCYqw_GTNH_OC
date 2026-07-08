@@ -19,7 +19,7 @@
 --      RLE: 每字节 = (value << 6) | (count - 1), value=0-3, count=1-64
 --------------------------------------------------------------------------------
 
-local VERSION = "4.2"
+local VERSION = "4.3"
 
 local component = require("component")
 local computer = require("computer")
@@ -342,7 +342,7 @@ local function playLoop(file, offsets, meta, useTape)
         end)
         os.sleep(0.05)
         pcall(function() tape.play() end)
-        os.sleep(0.15)  -- 等待磁带启动
+        os.sleep(0.30)  -- 补偿磁带驱动器缓冲延迟 (~0.25s)
     end
     print("  按 Ctrl+C 停止播放\n")
 

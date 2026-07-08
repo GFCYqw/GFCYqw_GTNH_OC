@@ -1,3 +1,4 @@
+-- Wiki 原版代码
 local os = require("os")
 local component = require("component")
 local sides = require("sides")

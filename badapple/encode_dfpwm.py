@@ -1,13 +1,11 @@
 """
-Bad Apple - 音频 DFPWM 编码器 (Computronics 兼容)
-===================================================
-从视频提取音频并编码为 Computronics Tape Drive 兼容的 DFPWM。
-
-格式: 32768Hz, 8-bit unsigned, mono → DFPWM (1-bit)
-参考: Computronics AudioPacketClientHandlerDFPWM.java
+Bad Apple - DFPWM 编码器 (aucmp 兼容)
+=======================================
+基于 Ben "GreaseMonkey" Russell 的 DFPWM 参考实现。
+与 Computronics/aucmp 比特级兼容。
 
 用法:
-    python encode_dfpwm.py <视频文件>
+  python encode_dfpwm.py <视频文件>
 """
 
 import argparse
@@ -16,36 +14,11 @@ import subprocess
 import sys
 import tempfile
 
-# DFPWM 步长表, 适配 8-bit signed 范围 (-128 ~ 127)
-# 原始表 for 16-bit 缩放为 8-bit: 除以 256
-STEPS = [
-    max(1, s // 256)
-    for s in [
-        1,
-        2,
-        4,
-        8,
-        16,
-        32,
-        64,
-        128,
-        256,
-        512,
-        1024,
-        2048,
-        4096,
-        8192,
-        16384,
-        32768,
-    ]
-]
-STEPS_MAX = len(STEPS) - 1
-
-SAMPLE_RATE = 32768  # Computronics DFPWM 标准采样率
+SAMPLE_RATE = 32768  # Computronics 标准
 
 
 def extract_pcm(video_path, output_path):
-    """FFmpeg: 8-bit unsigned mono PCM @ 32768Hz"""
+    """FFmpeg: 8-bit signed PCM @ 32768Hz"""
     cmd = [
         "ffmpeg",
         "-y",
@@ -56,70 +29,114 @@ def extract_pcm(video_path, output_path):
         "-ar",
         str(SAMPLE_RATE),
         "-f",
-        "u8",
+        "s8",
         output_path,
     ]
-    print(f"[FFmpeg] 提取 PCM ({SAMPLE_RATE}Hz, 8-bit unsigned mono)...")
+    print(f"[FFmpeg] PCM ({SAMPLE_RATE}Hz, 8-bit signed)...")
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         print(f"失败:\n{r.stderr}")
         sys.exit(1)
-    size = os.path.getsize(output_path)
-    print(f"  PCM: {size:,} 字节 ({size/SAMPLE_RATE:.1f}s)")
+    print(
+        f"  {os.path.getsize(output_path):,} 字节 "
+        f"({os.path.getsize(output_path)/SAMPLE_RATE:.1f}s)"
+    )
 
 
-def encode_dfpwm(samples_u8):
+def trim_silence(pcm, threshold=3):
+    """裁剪首尾静音 (8-bit signed, 0=静音)"""
+
+    def s(b):
+        return b if b <= 127 else b - 256
+
+    st = 0
+    for i in range(len(pcm)):
+        if abs(s(pcm[i])) > threshold:
+            st = i
+            break
+    ed = len(pcm)
+    for i in range(len(pcm) - 1, st, -1):
+        if abs(s(pcm[i])) > threshold:
+            ed = i + 1
+            break
+    t = pcm[st:ed]
+    if st > 0 or ed < len(pcm):
+        print(
+            f"  裁剪静音: {st+len(pcm)-ed} 样本 "
+            f"({(st+len(pcm)-ed)/SAMPLE_RATE:.1f}s)"
+        )
+    return t
+
+
+def encode_dfpwm(samples_s8):
     """
-    DFPWM 编码: 8-bit unsigned PCM → 1-bit DFPWM (MSB first)
-    参考: pl.asie.lib.audio.DFPWM (asie-lib)
+    DFPWM 编码 (aucmp 兼容).
+    参考: aucmp.c by Ben Russell, 2012
+
+    q = charge (预测值), s = strength (适应速率)
+    ri = 7 (strength increase), rd = 20 (strength decrease)
+    lt = -128 (上一目标值)
+
+    比特打包: LSB first (低比特位优先)
     """
-    idx = 0  # 步长索引
-    pred = 0  # 预测值 (signed 8-bit 范围)
-    prev = 0  # 上一个比特
+    q = 0  # charge, 初始 0
+    s = 1  # strength, 初始 1
+    lt = -128  # 上一目标, 初始 -128
+    ri = 7  # strength increase rate
+    rd = 20  # strength decrease rate
 
     out = bytearray()
-    byte = 0
-    bp = 7
-    total = len(samples_u8)
+    total = len(samples_s8)
 
-    for i, u8 in enumerate(samples_u8):
-        # unsigned 0-255 → signed -128 to 127
-        s = u8 - 128
+    # 处理每 8 个样本为一组
+    for block_start in range(0, total, 8):
+        d = 0
+        block_end = min(block_start + 8, total)
 
-        bit = 1 if s >= pred else 0
+        for j in range(block_end - block_start):
+            # 8-bit unsigned → signed
+            b = samples_s8[block_start + j]
+            v = b if b <= 127 else b - 256
 
-        if bit:
-            pred += STEPS[idx]
-            if pred > 127:
-                pred = 127
-        else:
-            pred -= STEPS[idx]
-            if pred < -128:
-                pred = -128
+            # 确定输出比特和目标值
+            t = 127 if (v >= q or v == -128) else -128
 
-        if bit == prev:
-            idx = idx + 1 if idx < STEPS_MAX else STEPS_MAX
-        else:
-            idx = idx - 1 if idx > 0 else 0
-        prev = bit
+            # 比特打包: LSB first
+            d >>= 1
+            if t > 0:
+                d |= 0x80
 
-        byte |= bit << bp
-        bp -= 1
-        if bp < 0:
-            out.append(byte)
-            byte = 0
-            bp = 7
+            # 更新 strength
+            st = 255 if (t == lt) else 0
+            sr = ri if (t == lt) else rd
+            ns = s + ((sr * (st - s) + 128) >> 8)
+            if ns == s and ns != st:
+                ns += 1 if st == 255 else -1
+            s = ns
 
-        if (i + 1) % 2000000 == 0:
-            print(f"  编码: {i+1}/{total} ({100*(i+1)/total:.0f}%)")
+            # 更新 charge
+            nq = q + ((s * (t - q) + 128) >> 8)
+            if nq == q and nq != t:
+                nq += 1 if t == 127 else -1
+            q = nq
 
-    if bp < 7:
-        out.append(byte)
+            lt = t
+
+        # 补齐剩余比特位移
+        for j in range(8 - (block_end - block_start)):
+            d >>= 1
+
+        out.append(d)
+
+        if (block_start + 8) % 2000000 == 0:
+            pct = 100 * min(block_start + 8, total) / total
+            print(f"  编码: {min(block_start+8, total)}/{total} ({pct:.0f}%)")
+
     return bytes(out)
 
 
 def main():
-    p = argparse.ArgumentParser(description="视频 -> DFPWM (Computronics)")
+    p = argparse.ArgumentParser(description="视频 -> DFPWM (aucmp 兼容)")
     p.add_argument("video")
     p.add_argument("-o", "--output", default="ba_audio.dfpwm")
     args = p.parse_args()
@@ -133,25 +150,19 @@ def main():
 
     try:
         extract_pcm(args.video, pcm_path)
-
         with open(pcm_path, "rb") as f:
-            pcm_u8 = f.read()
-
-        print(f"[DFPWM] 编码 {len(pcm_u8):,} 样本...")
-        dfpwm = encode_dfpwm(pcm_u8)
+            pcm = f.read()
+        pcm = trim_silence(pcm)
+        print(f"[DFPWM] 编码 {len(pcm):,} 样本 (aucmp 兼容)...")
+        dfpwm = encode_dfpwm(pcm)
 
         with open(args.output, "wb") as f:
             f.write(dfpwm)
 
-        dur = len(pcm_u8) / SAMPLE_RATE
-        dfpwm_mb = len(dfpwm) / 1024 / 1024
-
+        dur = len(pcm) / SAMPLE_RATE
+        mb = len(dfpwm) / 1024 / 1024
         print(f"\n[完成] {args.output}")
-        print(f"  时长:     {dur:.1f}s")
-        print(f"  PCM:      {len(pcm_u8)/1024/1024:.1f} MB")
-        print(f"  DFPWM:    {dfpwm_mb:.2f} MB ({len(dfpwm):,} 字节)")
-        print(f"  采样率:   {SAMPLE_RATE} Hz")
-
+        print(f"  时长: {dur:.1f}s  |  大小: {mb:.2f} MB  |  {SAMPLE_RATE}Hz")
     finally:
         os.unlink(pcm_path)
 
