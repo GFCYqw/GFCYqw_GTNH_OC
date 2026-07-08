@@ -22,7 +22,7 @@
 --      RLE: 每字节 = (value << 6) | (count - 1), value=0-3, count=1-64
 --------------------------------------------------------------------------------
 
-local VERSION = "3.0"
+local VERSION = "3.1"
 
 local component = require("component")
 local computer = require("computer")
@@ -423,25 +423,13 @@ end
 
 local function initTape(tapePath, totalFrames, fps)
     --[[
-    写入 DFPWM 数据到磁带 (仅首次).
-    返回 true 表示磁带就绪.
+    写入 DFPWM 数据到磁带。每次指定 .dfpwm 文件时都会重写。
     ]]
     if not audioDevice or audioType ~= "tape" then
         return false
     end
 
     local tape = audioDevice
-
-    -- 检查磁带是否已有数据 (避免重复写入)
-    local tapeSize = 0
-    pcall(function() tapeSize = tape.getSize() end)
-
-    if tapeSize > 0 then
-        print(string.format("  磁带已有数据: %d 字节, 跳过写入", tapeSize))
-        tape.seek(-tapeSize)
-        tape.stop()
-        return true
-    end
 
     -- 读取 DFPWM 文件
     local f, err = io.open(tapePath, "rb")
@@ -460,23 +448,30 @@ local function initTape(tapePath, totalFrames, fps)
 
     print(string.format("  写入磁带: %d 字节...", #data))
 
-    -- 写入磁带 (分块写入)
-    tape.stop()
-    tape.seek(-tape.getSize())  -- 倒带到头
-    tape.stop()
+    -- 停止并倒带
+    pcall(function() tape.stop() end)
+    os.sleep(0.1)
 
+    -- 写入 (分块)
     local chunkSize = 8192
     local written = 0
     for i = 1, #data, chunkSize do
         local chunk = data:sub(i, i + chunkSize - 1)
-        pcall(function() tape.write(chunk) end)
+        local ok = pcall(function() tape.write(chunk) end)
+        if not ok then
+            print(string.format("  [警告] 写入失败于偏移 %d", i))
+            break
+        end
         written = written + #chunk
     end
 
     -- 停止写入, 定位到开头
-    tape.stop()
-    tape.seek(-tape.getSize())
-    tape.stop()
+    pcall(function()
+        tape.stop()
+        tape.seek(-tape.getSize())
+        tape.stop()
+    end)
+    os.sleep(0.1)
 
     print(string.format("  磁带就绪: %d 字节", written))
     return true
