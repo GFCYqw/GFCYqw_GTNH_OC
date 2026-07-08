@@ -19,7 +19,7 @@
 --      RLE: 每字节 = (value << 6) | (count - 1), value=0-3, count=1-64
 --------------------------------------------------------------------------------
 
-local VERSION = "4.1"
+local VERSION = "4.2"
 
 local component = require("component")
 local computer = require("computer")
@@ -293,22 +293,24 @@ local function initTape(tapePath)
     pcall(function() tape.stop() end)
     os.sleep(0.1)
 
-    -- 分块写入
+    -- 分块写入, 记录实际写入字节数
     local chunkSize = 8192
+    local written = 0
     for i = 1, #data, chunkSize do
         local chunk = data:sub(i, i + chunkSize - 1)
         pcall(function() tape.write(chunk) end)
+        written = written + #chunk
     end
 
-    -- 定位到开头
+    -- 回退到开头: seek(-实际写入量)
     pcall(function()
         tape.stop()
-        tape.seek(-tape.getSize())
+        tape.seek(-written)
         tape.stop()
     end)
     os.sleep(0.1)
 
-    print("  磁带就绪")
+    print(string.format("  磁带就绪 (%d 字节)", written))
     return true
 end
 
@@ -332,8 +334,15 @@ local function playLoop(file, offsets, meta, useTape)
 
     print(string.format("\n  开始播放: %d 帧 @ %d FPS (%.1f 秒)", frameCount, fps, frameCount / fps))
     if useTape then
-        print("  音频: Tape Drive")
+        print("  音频: Tape Drive (同步中...)")
+        pcall(function()
+            tape.stop()
+            tape.seek(-tape.getSize())
+            tape.stop()
+        end)
+        os.sleep(0.05)
         pcall(function() tape.play() end)
+        os.sleep(0.15)  -- 等待磁带启动
     end
     print("  按 Ctrl+C 停止播放\n")
 
