@@ -13,12 +13,12 @@ wget -f https://github.xutongxin.me/https://raw.githubusercontent.com/GFCYqw/GFC
 wget -f https://github.xutongxin.me/https://raw.githubusercontent.com/GFCYqw/GFCYqw_GTNH_OC/main/badapple/ba_audio.dfpwm
 
 ba_player write ba_audio.dfpwm
-ba_player ba_frames.bin --scale=3.0 --volume=0.5
+ba_player --scale=3.0 --volume=0.5
 ```
 
 ## PC 端预处理
 
-```bash
+```Shell
 pip install Pillow numpy
 
 # 全息帧 (48×32, 15fps, RLE)
@@ -32,20 +32,20 @@ python encode_dfpwm.py "Bad Apple but 4k 60fps.mp4"
 
 ## 命令
 
-```lua
-ba_player                                -- 播放 (默认文件)
-ba_player <文件>                          -- 播放指定文件
-ba_player --scale=3.0 --volume=0.5        -- 缩放 3x, 音量 50%
-ba_player write [文件]                    -- 写入音频到磁带
+```Shell
+ba_player								-- 播放 (默认 ba_frames.bin)
+ba_player <frames.bin>					-- 播放指定文件
+ba_player --scale=3.0 --volume=0.5		-- 缩放 3x, 音量 0.5
+ba_player write [audio.dfpwm]			-- 写入音频到磁带
 ```
 
-## 硬件
+## OC 设备
 
-| 设备                | 用途            | 模组          |
-| ------------------- | --------------- | ------------- |
-| 全息投影仪 (Tier 2) | 48×32 画面     | OpenComputers |
-| 电脑                | 运行播放器      | OpenComputers |
-| Tape Drive + 磁带   | 原声音频 (可选) | Computronics  |
+| 设备                  | 用途            | 模组          |
+| --------------------- | --------------- | ------------- |
+| 全息投影仪 (Tier 2)   | 48×32 画面     | OpenComputers |
+| OC 电脑              | 运行播放器      | OpenComputers |
+| Tape Drive + 盒式磁带 | 原声音频 (可选) | Computronics  |
 
 ## 文件
 

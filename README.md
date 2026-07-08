@@ -12,7 +12,7 @@ wget -f https://github.xutongxin.me/https://raw.githubusercontent.com/GFCYqw/GFC
 wget -f https://github.xutongxin.me/https://raw.githubusercontent.com/GFCYqw/GFCYqw_GTNH_OC/main/badapple/ba_frames.bin
 wget -f https://github.xutongxin.me/https://raw.githubusercontent.com/GFCYqw/GFCYqw_GTNH_OC/main/badapple/ba_audio.dfpwm
 ba_player write ba_audio.dfpwm
-ba_player ba_frames.bin
+ba_player --scale=3.0 --volume=0.5
 ```
 
 ## 机器自动化
@@ -23,10 +23,9 @@ wget -f https://github.xutongxin.me/https://raw.githubusercontent.com/GFCYqw/GFC
 wget -f https://github.xutongxin.me/https://raw.githubusercontent.com/GFCYqw/GFCYqw_GTNH_OC/main/fluids_AR.lua
 ```
 
-| 脚本 | 用途 |
-|---|---|
-| `g8.lua` | 绝对重子完美净化单元自动化 |
-| `purified_water_grade_8_wikli.lua` | 净化水 G8 控制 |
-| `pump.lua` | 流体泵控制 |
-| `fluids_AR.lua` | AR 流体处理 |
-
+| 脚本                                 | 用途                             |
+| ------------------------------------ | -------------------------------- |
+| `g8.lua`                           | 绝对重子完美净化单元（G8）自动化 |
+| `purified_water_grade_8_wikli.lua` | 净化水 G8（Wiki 原版）           |
+| `pump.lua`                         | 太空钻机模块流体自动维持         |
+| `fluids_AR.lua`                    | 使用 AR 眼镜监控 ME 流体        |
