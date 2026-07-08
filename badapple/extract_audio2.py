@@ -73,7 +73,7 @@ def detect_pitch(samples, sample_rate, threshold):
     pf = freqs[mask][idx]
     pm = fft[mask][idx]
     avg = np.mean(fft[mask])
-    if avg > 0 and pm / avg < 2.0:
+    if avg > 0 and pm / avg < 1.3:
         return None
     return freq_to_note(pf)
 
@@ -91,6 +91,26 @@ def analyze_audio(audio, sample_rate, fps, total_frames, threshold):
         if (i + 1) % 500 == 0:
             print(f"  分析: {i+1}/{avail}")
     print(f"  音符帧: {nc} ({100*nc/max(avail,1):.1f}%)")
+
+    # 后处理: 填补短间隙 (连续 ≤2 帧的静音用前后音符填补)
+    filled = 0
+    for i in range(1, total_frames - 1):
+        if notes[i] is None:
+            # 单帧间隙: 前后都有相同音符则填补
+            if notes[i - 1] is not None and notes[i + 1] is not None:
+                if notes[i - 1] == notes[i + 1]:
+                    notes[i] = notes[i - 1]
+                    filled += 1
+    for i in range(2, total_frames - 2):
+        if notes[i] is None and notes[i - 1] is None and notes[i + 1] is None:
+            if notes[i - 2] is not None and notes[i + 2] is not None:
+                if notes[i - 2] == notes[i + 2]:
+                    notes[i - 1] = notes[i - 2]
+                    notes[i] = notes[i - 2]
+                    notes[i + 1] = notes[i - 2]
+                    filled += 3
+    if filled > 0:
+        print(f"  间隙填补: {filled} 帧")
     return notes
 
 
@@ -118,7 +138,9 @@ def main():
     p.add_argument("-o", "--output", default="ba_audio.bin")
     p.add_argument("-f", "--fps", type=int, default=15)
     p.add_argument("-n", "--frames", type=int, default=None)
-    p.add_argument("--threshold", type=float, default=500)
+    p.add_argument(
+        "--threshold", type=float, default=200, help="音量阈值 (默认: 200, 越低越敏感)"
+    )
     p.add_argument("--instrument", type=int, default=0, choices=range(7))
     p.add_argument("--sample-rate", type=int, default=8000)
     args = p.parse_args()

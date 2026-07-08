@@ -22,7 +22,7 @@
 --      RLE: 每字节 = (value << 6) | (count - 1), value=0-3, count=1-64
 --------------------------------------------------------------------------------
 
-local VERSION = "2.3"
+local VERSION = "2.4"
 
 local component = require("component")
 local computer = require("computer")
@@ -80,6 +80,71 @@ end
 -- 音符 → 频率 (Iron Note 0 = C4 = 261.63Hz)
 local function noteToFreq(note)
     return 261.63 * 2 ^ (note / 12)
+end
+
+-- 音频缓冲 (批量发送，避免断裂)
+local audioBuffer = {}       -- {{freq, duration_sec}, ...}
+local lastPlayedNote = nil   -- 上一个音符 (用于音符保持)
+local sustainFrames = 0      -- 剩余保持帧数
+local SUSTAIN_MAX = 4        -- 静音后保持 4 帧 (~267ms @ 15fps)
+
+local function flushAudioBuffer()
+    if #audioBuffer == 0 then return end
+    if audioType == "noise" then
+        audioDevice.play(audioBuffer)
+    elseif audioType == "sound" then
+        -- Sound Card: 取第一个频率
+        local freq = audioBuffer[1][1]
+        audioDevice.setWave(1, 1)
+        audioDevice.setFrequency(1, freq)
+        audioDevice.setVolume(1, 0.4)
+        audioDevice.open(1)
+        for _, entry in ipairs(audioBuffer) do
+            audioDevice.setFrequency(1, entry[1])
+            audioDevice.delay(math.floor(entry[2] * 1000))
+        end
+        audioDevice.close(1)
+        audioDevice.process()
+    end
+    audioBuffer = {}
+end
+
+local function playAudioFrame(audioNotes, frameIdx, fps)
+    --[[
+    音符保持 + 缓冲: 平滑连续的音频输出。
+    即使当前帧无音符，也会短暂保持上一个音符。
+    每 8 帧或音符变化时刷新缓冲区。
+    ]]
+    local frameDur = 1.0 / fps
+    local hasNote = (audioNotes[frameIdx] ~= nil)
+    local curNote = hasNote and audioNotes[frameIdx].note or nil
+
+    if hasNote then
+        -- 有音符: 加入缓冲, 重置保持计时器
+        lastPlayedNote = curNote
+        sustainFrames = SUSTAIN_MAX
+        audioBuffer[#audioBuffer + 1] = {noteToFreq(curNote), frameDur}
+    elseif sustainFrames > 0 then
+        -- 音符保持: 延续上一个音符
+        sustainFrames = sustainFrames - 1
+        audioBuffer[#audioBuffer + 1] = {noteToFreq(lastPlayedNote), frameDur}
+    else
+        -- 静音: 刷新缓冲区 (断路)
+        flushAudioBuffer()
+        lastPlayedNote = nil
+        return
+    end
+
+    -- 每 8 帧 (~0.5s) 或音符变化时刷新
+    if #audioBuffer >= 8 then
+        flushAudioBuffer()
+    elseif hasNote and #audioBuffer > 1 then
+        -- 检查音符是否变化
+        local prevNote = audioNotes[frameIdx - 1]
+        if prevNote and prevNote.note ~= curNote then
+            flushAudioBuffer()
+        end
+    end
 end
 
 --------------------------------------------------------------------------------
@@ -343,7 +408,7 @@ local function initHologram()
     print(string.format("    颜色 3: 0x%06X (白色)", CONFIG.palette[3]))
     print(string.format("  缩放: %.1fx", CONFIG.scale))
     if hasAudio then
-        print("  Iron Note Block: 已检测到")
+        print("  Speaker: 已检测到")
     end
 end
 
@@ -402,23 +467,9 @@ local function playLoop(file, offsets, meta, audio)
         local changes = renderFrame(frame, prevFrame, CONFIG.zLevel)
         totalChanges = totalChanges + changes
 
-        -- 播放音频
-        if audioNotes and audioNotes[i] and audioDevice then
-            local freq = noteToFreq(audioNotes[i].note)
-            pcall(function()
-                if audioType == "noise" then
-                    audioDevice.play({{freq, 0.08}})
-                else
-                    -- Sound Card API
-                    audioDevice.setWave(1, 1)  -- sine
-                    audioDevice.setFrequency(1, freq)
-                    audioDevice.setVolume(1, 0.4)
-                    audioDevice.open(1)
-                    audioDevice.delay(80)
-                    audioDevice.close(1)
-                    audioDevice.process()
-                end
-            end)
+        -- 播放音频 (缓冲批量发送，避免断裂)
+        if audioNotes and audioDevice then
+            pcall(playAudioFrame, audioNotes, i, fps)
         end
 
         -- 帧率控制
