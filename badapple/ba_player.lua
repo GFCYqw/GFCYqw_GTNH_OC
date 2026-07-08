@@ -4,12 +4,9 @@
 --  读取预处理后的 .bin 文件, 在 XY 平面 (Z=24) 上逐帧渲染全息动画。
 --
 --  用法:
---      将 ba_frames.bin 放在与本脚本相同的目录下, 然后运行:
---          ba_player
---      或指定文件路径:
---          ba_player /path/to/ba_frames.bin
---      可选指定音频文件:
---          ba_player ba_frames.bin ba_audio.bin
+--      ba_player write [dfpwm文件]  写入音频到磁带 (仅需一次)
+--      ba_player [frames文件]       播放全息视频 + 磁带音频
+--      ba_player                    使用默认文件 ba_frames.bin
 --
 --  依赖:
 --      - Tier 2 全息投影仪 (component.hologram)
@@ -22,7 +19,7 @@
 --      RLE: 每字节 = (value << 6) | (count - 1), value=0-3, count=1-64
 --------------------------------------------------------------------------------
 
-local VERSION = "3.1"
+local VERSION = "4.1"
 
 local component = require("component")
 local computer = require("computer")
@@ -43,111 +40,16 @@ if not holoOk then
 end
 hologram = component.hologram
 
--- 音频播放方式 (优先级: tape_drive > noise > sound)
-local audioDevice = nil
-local audioType = nil  -- "tape", "noise", "sound"
-
--- 1. Tape Drive (完整原声音频, 最佳)
-local tapeOk, tapeDev = pcall(function() return component.tape_drive end)
-if tapeOk and tapeDev then
-    audioDevice = tapeDev
-    audioType = "tape"
-    print("[音频] 检测到 Tape Drive (原声音频)")
+-- Tape Drive (Computronics 磁带驱动器, 完整原声音频)
+local tape = nil
+pcall(function() tape = component.tape_drive end)
+if tape then
+    print("[音频] Tape Drive 已检测到")
 end
 
--- 2. Noise Card
-if not audioDevice then
-    local ok, dev = pcall(function() return component.noise end)
-    if ok and dev then
-        audioDevice = dev
-        audioType = "noise"
-        print("[音频] 检测到 Noise Card (旋律)")
-    end
-end
-
--- 3. Sound Card
-if not audioDevice then
-    local ok, dev = pcall(function() return component.sound end)
-    if ok and dev then
-        audioDevice = dev
-        audioType = "sound"
-        print("[音频] 检测到 Sound Card (旋律)")
-    end
-end
-
-local hasAudio = (audioDevice ~= nil)
-if not hasAudio then
-    print("[音频] 无音频设备, 仅播放画面")
-end
-
--- 音符 → 频率 (Iron Note 0 = C4 = 261.63Hz)
+-- 音符 → 频率 (Iron Note 0 = C4 = 261.63Hz) - 保留以备后用
 local function noteToFreq(note)
     return 261.63 * 2 ^ (note / 12)
-end
-
--- 音频缓冲 (批量发送，避免断裂)
-local audioBuffer = {}       -- {{freq, duration_sec}, ...}
-local lastPlayedNote = nil   -- 上一个音符 (用于音符保持)
-local sustainFrames = 0      -- 剩余保持帧数
-local SUSTAIN_MAX = 4        -- 静音后保持 4 帧 (~267ms @ 15fps)
-
-local function flushAudioBuffer()
-    if #audioBuffer == 0 then return end
-    if audioType == "noise" then
-        audioDevice.play(audioBuffer)
-    elseif audioType == "sound" then
-        -- Sound Card: 取第一个频率
-        local freq = audioBuffer[1][1]
-        audioDevice.setWave(1, 1)
-        audioDevice.setFrequency(1, freq)
-        audioDevice.setVolume(1, 0.4)
-        audioDevice.open(1)
-        for _, entry in ipairs(audioBuffer) do
-            audioDevice.setFrequency(1, entry[1])
-            audioDevice.delay(math.floor(entry[2] * 1000))
-        end
-        audioDevice.close(1)
-        audioDevice.process()
-    end
-    audioBuffer = {}
-end
-
-local function playAudioFrame(audioNotes, frameIdx, fps)
-    --[[
-    音符保持 + 缓冲: 平滑连续的音频输出。
-    即使当前帧无音符，也会短暂保持上一个音符。
-    每 8 帧或音符变化时刷新缓冲区。
-    ]]
-    local frameDur = 1.0 / fps
-    local hasNote = (audioNotes[frameIdx] ~= nil)
-    local curNote = hasNote and audioNotes[frameIdx].note or nil
-
-    if hasNote then
-        -- 有音符: 加入缓冲, 重置保持计时器
-        lastPlayedNote = curNote
-        sustainFrames = SUSTAIN_MAX
-        audioBuffer[#audioBuffer + 1] = {noteToFreq(curNote), frameDur}
-    elseif sustainFrames > 0 then
-        -- 音符保持: 延续上一个音符
-        sustainFrames = sustainFrames - 1
-        audioBuffer[#audioBuffer + 1] = {noteToFreq(lastPlayedNote), frameDur}
-    else
-        -- 静音: 刷新缓冲区 (断路)
-        flushAudioBuffer()
-        lastPlayedNote = nil
-        return
-    end
-
-    -- 每 8 帧 (~0.5s) 或音符变化时刷新
-    if #audioBuffer >= 8 then
-        flushAudioBuffer()
-    elseif hasNote and #audioBuffer > 1 then
-        -- 检查音符是否变化
-        local prevNote = audioNotes[frameIdx - 1]
-        if prevNote and prevNote.note ~= curNote then
-            flushAudioBuffer()
-        end
-    end
 end
 
 --------------------------------------------------------------------------------
@@ -157,9 +59,7 @@ end
 local CONFIG = {
     -- 默认数据文件路径
     dataFile   = "ba_frames.bin",
-    -- 音频文件路径 (可选)
-    audioFile  = "ba_audio.bin",
-    -- DFPWM 磁带文件路径 (Tape Drive 用)
+    -- DFPWM 磁带文件路径 (Tape Drive)
     tapeFile   = "ba_audio.dfpwm",
     -- 投影平面 Z 坐标 (0-47, XY 平面, 24=居中)
     zLevel     = 24,
@@ -228,56 +128,6 @@ local function readOffsetTable(file, frameCount)
     end
 
     return offsets
-end
-
---------------------------------------------------------------------------------
--- 音频数据读取
---------------------------------------------------------------------------------
-
-local function loadAudioData(audioPath, expectedFrames)
-    --[[
-    读取 ba_audio.bin, 返回 frame_notes[1..frames] 数组。
-    每帧: nil=静音, {instrument, note}=播放音符
-    ]]
-    local f, err = io.open(audioPath, "rb")
-    if not f then
-        return nil, err
-    end
-
-    local header = f:read(11)
-    if not header or #header < 11 then
-        f:close()
-        return nil, "音频文件头不完整"
-    end
-
-    local magic, version, frames, fps, reserved =
-        string.unpack("<c4BIBB", header)
-
-    if magic ~= "BAAU" then
-        f:close()
-        return nil, "无效的音频格式"
-    end
-
-    local raw = f:read(frames)
-    f:close()
-
-    if not raw or #raw < frames then
-        return nil, "音频数据不完整"
-    end
-
-    local notes = {}
-    local count = 0
-    for i = 1, frames do
-        local byte = string.byte(raw, i)
-        if byte ~= 0 then
-            local instrument = byte >> 5
-            local note = byte & 0x1F
-            notes[i] = { instrument = instrument, note = note }
-            count = count + 1
-        end
-    end
-
-    return { notes = notes, frames = frames, count = count, fps = fps }
 end
 
 --------------------------------------------------------------------------------
@@ -421,20 +271,12 @@ end
 -- 磁带初始化
 --------------------------------------------------------------------------------
 
-local function initTape(tapePath, totalFrames, fps)
-    --[[
-    写入 DFPWM 数据到磁带。每次指定 .dfpwm 文件时都会重写。
-    ]]
-    if not audioDevice or audioType ~= "tape" then
-        return false
-    end
+local function initTape(tapePath)
+    if not tape then return false end
 
-    local tape = audioDevice
-
-    -- 读取 DFPWM 文件
     local f, err = io.open(tapePath, "rb")
     if not f then
-        print("  [警告] 找不到磁带文件: " .. tapePath .. " (" .. tostring(err) .. ")")
+        print("  [警告] 找不到磁带文件: " .. tapePath)
         return false
     end
 
@@ -448,24 +290,17 @@ local function initTape(tapePath, totalFrames, fps)
 
     print(string.format("  写入磁带: %d 字节...", #data))
 
-    -- 停止并倒带
     pcall(function() tape.stop() end)
     os.sleep(0.1)
 
-    -- 写入 (分块)
+    -- 分块写入
     local chunkSize = 8192
-    local written = 0
     for i = 1, #data, chunkSize do
         local chunk = data:sub(i, i + chunkSize - 1)
-        local ok = pcall(function() tape.write(chunk) end)
-        if not ok then
-            print(string.format("  [警告] 写入失败于偏移 %d", i))
-            break
-        end
-        written = written + #chunk
+        pcall(function() tape.write(chunk) end)
     end
 
-    -- 停止写入, 定位到开头
+    -- 定位到开头
     pcall(function()
         tape.stop()
         tape.seek(-tape.getSize())
@@ -473,7 +308,7 @@ local function initTape(tapePath, totalFrames, fps)
     end)
     os.sleep(0.1)
 
-    print(string.format("  磁带就绪: %d 字节", written))
+    print("  磁带就绪")
     return true
 end
 
@@ -481,19 +316,10 @@ end
 -- 主播放循环
 --------------------------------------------------------------------------------
 
-local function playLoop(file, offsets, meta, audio)
+local function playLoop(file, offsets, meta, useTape)
     local fps = meta.fps
     local frameCount = meta.frames
     local frameTime = 1.0 / fps
-
-    -- 音频数据 (Noise/Sound 卡用)
-    local audioNotes = nil
-    local audioCount = 0
-    local useTape = (audioType == "tape")
-    if audio and not useTape then
-        audioNotes = audio.notes
-        audioCount = audio.count
-    end
 
     -- 前一帧状态 (用于 delta 渲染)
     local prevFrame = {}
@@ -505,6 +331,10 @@ local function playLoop(file, offsets, meta, audio)
     local startTime = computer.uptime()
 
     print(string.format("\n  开始播放: %d 帧 @ %d FPS (%.1f 秒)", frameCount, fps, frameCount / fps))
+    if useTape then
+        print("  音频: Tape Drive")
+        pcall(function() tape.play() end)
+    end
     print("  按 Ctrl+C 停止播放\n")
 
     for i = 1, frameCount do
@@ -532,18 +362,6 @@ local function playLoop(file, offsets, meta, audio)
         -- 渲染 (delta)
         local changes = renderFrame(frame, prevFrame, CONFIG.zLevel)
         totalChanges = totalChanges + changes
-
-        -- 播放音频
-        if useTape then
-            -- Tape Drive: 第一帧启动, 之后自动播放
-            if i == 1 then
-                pcall(function()
-                    audioDevice.play()
-                end)
-            end
-        elseif audioNotes then
-            pcall(playAudioFrame, audioNotes, i, fps)
-        end
 
         -- 帧率控制
         local elapsed = computer.uptime() - startTime
@@ -573,12 +391,8 @@ local function playLoop(file, offsets, meta, audio)
         formatTime(totalTime),
         math.min(frameCount, #offsets) / totalTime))
     print(string.format("  总更新体素: %d (每帧平均 %.0f)", totalChanges, totalChanges / frameCount))
-    if audioCount > 0 then
-        print(string.format("  播放音符:   %d", audioCount))
-    end
-    if useTape and audioDevice then
-        pcall(function() audioDevice.stop() end)
-        print("  磁带已停止")
+    if useTape then
+        pcall(function() tape.stop() end)
     end
 end
 
@@ -598,33 +412,41 @@ end
 -- 主函数
 --------------------------------------------------------------------------------
 
-local function main(args)
-    printBanner()
-
-    -- 确定数据文件路径
-    local dataPath = CONFIG.dataFile
-    if args and #args > 0 and args[1] ~= "" then
-        dataPath = args[1]
+local function doWrite(tapePath)
+    --[[
+    子命令: write — 将 DFPWM 文件写入磁带
+    用法: ba_player write [dfpwm文件]
+    ]]
+    if not tape then
+        print("[错误] 未检测到 Tape Drive")
+        return
     end
 
-    -- 第二参数: 音频文件路径 (可选)
-    if args and #args >= 2 and args[2] ~= "" then
-        CONFIG.audioFile = args[2]
+    if tapePath and tapePath ~= "" then
+        CONFIG.tapeFile = tapePath
     end
+
+    print("  写入磁带: " .. CONFIG.tapeFile)
+    initTape(CONFIG.tapeFile)
+    print("\n  写入完成。使用 'ba_player' 播放。")
+end
+
+local function doPlay(framesPath)
+    --[[
+    子命令: play (默认) — 播放全息视频 + 磁带音频
+    用法: ba_player [frames文件]
+    ]]
+    local dataPath = framesPath or CONFIG.dataFile
 
     print("  数据文件: " .. dataPath)
 
-    -- 直接尝试打开 (OC 的 io.open 可以正确处理相对/绝对路径)
     local file, err = io.open(dataPath, "rb")
     if not file then
         print("\n[错误] 无法打开: " .. dataPath)
         print("  " .. tostring(err))
-        print("  请确保文件在当前目录, 或使用绝对路径:")
-        print("    ba_player /home/badapple/ba_frames.bin")
         return
     end
 
-    -- 可选: 显示文件大小
     pcall(function()
         if fs.size then
             local sz = fs.size(dataPath)
@@ -634,7 +456,6 @@ local function main(args)
         end
     end)
 
-    -- 读取头信息
     local meta, err = readHeader(file)
     if not meta then
         print("\n[错误] " .. tostring(err))
@@ -645,37 +466,6 @@ local function main(args)
     print(string.format("  帧数: %d | FPS: %d | 时长: %.1f 秒",
         meta.frames, meta.fps, meta.frames / meta.fps))
 
-    -- 尝试加载音频 (Tape Drive 或 Noise/Sound 卡)
-    local audio = nil
-    if hasAudio then
-        if audioType == "tape" then
-            -- Tape Drive: 写入 DFPWM 数据
-            local tapePath = CONFIG.tapeFile
-            -- 第二参数可指定磁带文件: ba_player frames.bin tape.dfpwm
-            if args and #args >= 2 and args[2] ~= "" then
-                tapePath = args[2]
-            end
-            local tapeReady = initTape(tapePath, meta.frames, meta.fps)
-            if tapeReady then
-                print(string.format("  音频: Tape Drive | 文件: %s", tapePath))
-            end
-        else
-            -- Noise/Sound 卡
-            local audioPath = CONFIG.audioFile
-            if args and #args >= 2 and args[2] ~= "" then
-                audioPath = args[2]
-            end
-            local audioOk, audioData = pcall(loadAudioData, audioPath, meta.frames)
-            if audioOk and audioData then
-                audio = audioData
-                print(string.format("  音频: %d 音符 | 文件: %s", audio.count, audioPath))
-            else
-                print("  音频: 未加载 (" .. tostring(audioData) .. ")")
-            end
-        end
-    end
-
-    -- 读取偏移表
     local offsets, err = readOffsetTable(file, meta.frames)
     if not offsets then
         print("\n[错误] " .. tostring(err))
@@ -683,17 +473,36 @@ local function main(args)
         return
     end
 
-    -- 初始化全息投影仪
+    local useTape = (tape ~= nil)
+    if useTape then
+        print("  音频: Tape Drive")
+    end
+
     initHologram()
 
-    -- 开始播放
-    local ok, errMsg = pcall(playLoop, file, offsets, meta, audio)
+    local ok, errMsg = pcall(playLoop, file, offsets, meta, useTape)
 
-    -- 清理
     cleanup(file)
 
     if not ok then
         print("\n[运行时错误] " .. tostring(errMsg))
+    end
+end
+
+local function main(args)
+    printBanner()
+
+    local cmd = (args and #args > 0 and args[1]) or "play"
+
+    if cmd == "write" then
+        doWrite(args and args[2])
+    else
+        -- 播放模式: 第一个非 "play" 参数是文件路径
+        local filePath = nil
+        if args and #args > 0 and args[1] ~= "play" then
+            filePath = args[1]
+        end
+        doPlay(filePath)
     end
 end
 
