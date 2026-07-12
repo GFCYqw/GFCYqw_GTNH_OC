@@ -1,13 +1,13 @@
 --[[
-  综合脚本：AR眼镜流体监控 + 自动维持（太空钻机生产）
+  综合脚本：AR眼镜流体监控 + 自动维持（太空钻机生产） v2.0
   功能：
     1. AR眼镜实时显示流体存量、变化率、阈值警告。
-    2. 每60秒检查一次，若某流体低于阈值，自动调整所有太空钻机参数（仅在目标变化时调整）。
-    3. 自动发现钻机。
-    4. 终端以仪表板形式显示当前状态，展示每个流体的实际库存与阈值。
-    5. 所有流体充足且无持续目标时自动关闭钻机（每次检查强制关闭，覆盖手动开启）。
-    6. 变化率基于眼镜刷新的实际间隔（computer.uptime）计算。
-    7. 终端显示运行时间（调试用）。
+    2. 按优先级分配不同流体到不同槽位，目标为阈值的200%。
+    3. 自动发现钻机并检测等级（lv1/lv2/lv3），显示等级信息。
+    4. 终端以仪表板形式显示当前状态，展示每个流体的实际库存与200%目标。
+    5. 所有流体达到200%时自动关闭钻机；单流体达标后其槽位切换至其他流体。
+    6. 空余槽位随机安排未达标流体抽取。
+    7. 变化率基于眼镜刷新的实际间隔（computer.uptime）计算。
 ]]
 
 local component = require("component")
@@ -36,6 +36,12 @@ local offsetY = 17
 local lineSpacing = 0.5
 local glassesInterval = 3          -- 眼镜刷新间隔（秒）
 local checkInterval = 30           -- 维持检查间隔（秒）
+local TARGET_RATIO = 2.0           -- 目标倍率（200%）
+
+-- 泵等级常量
+local PUMP_SLOTS = {[1]=1, [2]=4, [3]=4}
+local PUMP_PARALLEL = {[1]=1, [2]=4, [3]=64}
+local LV_NAMES = {[1]="LV1", [2]="LV2", [3]="LV3"}
 
 -- 流体配置：{注册名, 阈值(mB), 行星参数, 气体参数, 显示名}
 local FLUID_CONFIGS = {
@@ -72,11 +78,12 @@ local lastAmounts = {}          -- 存储上次的 amount
 local doContinue = true
 local lastGlassesTime = 0
 local lastCheckTime = 0
-local lastTargetFluid = nil
 local startTime = 0
 
 local PROCESSED_FLUIDS = {}
-local gt_machines = {}
+local gt_machines = {}          -- {proxy, address, lv, name, slots={idx...}}
+local slotAssignments = {}      -- {[address:slotIdx] = fluidName} 槽位分配跟踪
+local totalSlots = 0            -- 总槽位数
 
 -- ==================== 辅助函数 ====================
 local function parseNumberWithSuffix(value)
@@ -194,18 +201,33 @@ local function glassesSetup()
     end
 end
 
+-- 构建机器状态文本（含等级信息）
+local function buildMachineText()
+    if #gt_machines == 0 then return "钻机: 无", {255, 85, 85} end
+    -- 统计各等级数量
+    local lvCount = {}
+    for _, m in ipairs(gt_machines) do
+        lvCount[m.lv] = (lvCount[m.lv] or 0) + 1
+    end
+    local parts = {}
+    for lv = 1, 3 do
+        if lvCount[lv] then
+            table.insert(parts, string.format("%s×%d", LV_NAMES[lv], lvCount[lv]))
+        end
+    end
+    return string.format("钻机: %d台 %s (%d槽)", #gt_machines, table.concat(parts, " "), totalSlots), {85, 255, 85}
+end
+
 -- 使用眼镜刷新的实际间隔计算变化率
 local function updateGlasses(now)
     if not glasses then return end
 
-    -- 更新状态和机器数
+    -- 更新状态和机器数（含等级）
     local statusText = meConnected and "ME: 在线" or "ME: 离线"
     local statusColor = meConnected and {85, 255, 85} or {255, 85, 85}
     setShadowText(statusKey, statusText, table.unpack(statusColor))
 
-    local machineCount = #gt_machines
-    local machineText = machineCount > 0 and ("钻机: " .. machineCount .. "台") or "钻机: 无"
-    local machineColor = machineCount > 0 and {85, 255, 85} or {255, 85, 85}
+    local machineText, machineColor = buildMachineText()
     setShadowText(machineKey, machineText, table.unpack(machineColor))
 
     -- 计算时间差（两次眼镜刷新之间的间隔）
@@ -228,35 +250,39 @@ local function updateGlasses(now)
         end
 
         local rateText = formatRate(diff)
-        -- local text = string.format("%s: %s mB%s", fluid.display, formatFluidAmount(amount), rateText)
         local text = string.format("%s: %s L%s", fluid.display, formatFluidAmount(amount), rateText)
 
-
         local r, g, b = 255, 255, 255
-                if amount == nil then
-            r, g, b = 128, 128, 128
-        elseif fluid.threshold and fluid.threshold > 0 and amount < fluid.threshold then
-            r, g, b = 255, 85, 85   -- 低于阈值红色（优先）
-        else
-            if diff > 0 then
-                r, g, b = 85, 255, 85   -- 增加 → 绿色
-            elseif diff < 0 then
-                r, g, b = 255, 255, 85  -- 减少 → 黄色
+        if amount == nil then
+            r, g, b = 128, 128, 128           -- 灰色：断连
+        elseif fluid.threshold > 0 and amount < fluid.threshold then
+            -- 低于100%阈值
+            if diff < 0 then
+                r, g, b = 255, 85, 85         -- 红色：低于阈值且在减少
             else
-                r, g, b = 255, 255, 255 -- 不变 → 白色
+                r, g, b = 255, 165, 0         -- 橙色：低于阈值但在增加
             end
+        elseif fluid.threshold > 0 and amount < fluid.threshold * TARGET_RATIO then
+            -- 100%~200%之间
+            if diff < 0 then
+                r, g, b = 255, 255, 85        -- 黄色：收集中但在减少
+            else
+                r, g, b = 85, 255, 85         -- 绿色：收集中且在增加
+            end
+        else
+            r, g, b = 255, 255, 255           -- 白色：已达200%目标
         end
         setShadowText(key, text, r, g, b)
     end
 end
 
 -- ==================== 钻机控制 ====================
-local function safelyStopMachine(machine)
-    if machine.isMachineActive() then
-        machine.setWorkAllowed(false)
+local function safelyStopMachine(proxy)
+    if proxy.isMachineActive() then
+        proxy.setWorkAllowed(false)
         local maxWait = 60
         local waitCount = 0
-        while machine.isMachineActive() and waitCount < maxWait do
+        while proxy.isMachineActive() and waitCount < maxWait do
             os.sleep(1)
             waitCount = waitCount + 1
         end
@@ -268,76 +294,163 @@ local function safelyStopMachine(machine)
     return true
 end
 
-local function adjustMachineParameters(machine, param1, param2)
-    if not safelyStopMachine(machine) then
-        print("无法停止机器，参数调整取消")
-        return false
-    end
-    local success = true
-    for slot = 0, 6, 2 do
-        success = success and pcall(machine.setParameters, slot, 0, param1)
-        success = success and pcall(machine.setParameters, slot, 1, param2)
-    end
-    if success then
-        machine.setWorkAllowed(true)
-        return true
-    else
-        print("机器参数调整失败")
-        return false
-    end
-end
-
-local function adjustAllMachines(param1, param2)
-    local successCount = 0
-    for i, machine in ipairs(gt_machines) do
-        if adjustMachineParameters(machine, param1, param2) then
-            successCount = successCount + 1
-        end
-    end
-    return successCount
-end
-
 local function shutdownAllMachines()
     local count = 0
-    for _, machine in ipairs(gt_machines) do
-        if safelyStopMachine(machine) then
+    for _, m in ipairs(gt_machines) do
+        if safelyStopMachine(m.proxy) then
             count = count + 1
         else
-            print("关闭机器失败")
+            print("关闭机器失败: " .. m.address:sub(1, 8))
         end
     end
     return count
 end
 
--- ==================== 维持逻辑 ====================
-local function findFluidToRefill()
+-- ==================== 优先级槽位分配算法 ====================
+local function assignSlots()
+    if #gt_machines == 0 then return nil end
+
+    -- 1. 收集所有槽位
+    local allSlots = {}
+    for _, m in ipairs(gt_machines) do
+        for _, slotIdx in ipairs(m.slots) do
+            table.insert(allSlots, {machine = m, slotIdx = slotIdx})
+        end
+    end
+
+    -- 2. 按优先级筛选未达200%目标的流体（PROCESSED_FLUIDS 顺序 = 优先级）
+    local needy = {}
     for _, fluid in ipairs(PROCESSED_FLUIDS) do
-        if fluid.threshold ~= -1 then
+        if fluid.threshold > 0 then  -- 跳过 threshold==-1 的"持续"流体
             local amount = getFluidAmount(fluid.name)
-            if amount ~= nil and amount < fluid.threshold then
-                return fluid
+            if amount ~= nil and amount < fluid.threshold * TARGET_RATIO then
+                table.insert(needy, fluid)
             end
         end
     end
-    for _, fluid in ipairs(PROCESSED_FLUIDS) do
-        if fluid.threshold == -1 then
-            return fluid
+
+    -- 3. 所有流体达标 → 返回 nil（信号：关机）
+    if #needy == 0 then
+        return nil
+    end
+
+    -- 4. 分配：先按优先级一对一分配，多余槽位随机补充
+    local nSlots = #allSlots
+    local nNeedy = #needy
+    local assignments = {}
+
+    -- 前 min(nSlots, nNeedy) 个槽位按优先级分配
+    for i = 1, math.min(nSlots, nNeedy) do
+        table.insert(assignments, {
+            machine = allSlots[i].machine,
+            slotIdx = allSlots[i].slotIdx,
+            fluid = needy[i]
+        })
+    end
+
+    -- 多余槽位从 needy 中随机选取
+    if nSlots > nNeedy then
+        math.randomseed(math.floor(computer.uptime() * 1000) % 2147483647)
+        for i = nNeedy + 1, nSlots do
+            local r = math.random(1, nNeedy)
+            table.insert(assignments, {
+                machine = allSlots[i].machine,
+                slotIdx = allSlots[i].slotIdx,
+                fluid = needy[r]
+            })
         end
     end
-    return nil
+
+    return assignments
+end
+
+-- ==================== 槽位参数应用 ====================
+local function applySlotAssignments(assignments)
+    if not assignments or #assignments == 0 then
+        return 0, 0
+    end
+
+    -- 按机器分组，减少启停次数
+    local machineChanges = {}  -- {[machine] = {{slotIdx, fluid}, ...}}
+    local changedSlotCount = 0
+
+    for _, a in ipairs(assignments) do
+        local key = a.machine.address .. ":" .. a.slotIdx
+        if slotAssignments[key] ~= a.fluid.name then
+            if not machineChanges[a.machine] then
+                machineChanges[a.machine] = {}
+            end
+            table.insert(machineChanges[a.machine], {slotIdx = a.slotIdx, fluid = a.fluid})
+            changedSlotCount = changedSlotCount + 1
+        end
+    end
+
+    -- 对每台有变化的机器：停止 → 改参数 → 启动
+    local changedMachineCount = 0
+    for machine, changes in pairs(machineChanges) do
+        if not safelyStopMachine(machine.proxy) then
+            print(string.format("警告：机器 %s 停止失败", machine.address:sub(1, 8)))
+        else
+            local ok = true
+            for _, ch in ipairs(changes) do
+                ok = ok and pcall(machine.proxy.setParameters, ch.slotIdx, 0, ch.fluid.param1)
+                ok = ok and pcall(machine.proxy.setParameters, ch.slotIdx, 1, ch.fluid.param2)
+                if ok then
+                    slotAssignments[machine.address .. ":" .. ch.slotIdx] = ch.fluid.name
+                end
+            end
+            if ok then
+                machine.proxy.setWorkAllowed(true)
+                changedMachineCount = changedMachineCount + 1
+            else
+                print(string.format("警告：机器 %s 参数设置失败", machine.address:sub(1, 8)))
+            end
+        end
+    end
+
+    -- 确保所有有分配的机器都在运行（未变化的机器可能被手动关闭）
+    for _, a in ipairs(assignments) do
+        if not machineChanges[a.machine] then
+            if not a.machine.proxy.isMachineActive() then
+                a.machine.proxy.setWorkAllowed(true)
+            end
+        end
+    end
+
+    return changedMachineCount, changedSlotCount
 end
 
 -- ==================== 终端仪表板 ====================
-local function drawDashboard(target, adjustmentMsg)
+local function drawDashboard(assignments, adjustmentMsg)
     term.clear()
-    print("===================  太空电梯流体监控与维持系统  ===================")
+    print("======================  太空电梯流体监控与维持系统 v2.0  =======================")
     local uptime = computer.uptime()
     local elapsed = uptime - startTime
     print(string.format("运行时间: %s", formatUptime(elapsed)))
-    print(string.format("ME网络: %s  |  钻机数: %d 台  |  AR眼镜: %s",
-          meConnected and "在线" or "离线", #gt_machines, glasses and "在线" or "离线"))
-    print("--------------------------------------------------------------------")
 
+    -- 等级统计
+    local lvInfo = ""
+    if #gt_machines > 0 then
+        local lvCount = {}
+        for _, m in ipairs(gt_machines) do
+            lvCount[m.lv] = (lvCount[m.lv] or 0) + 1
+        end
+        local parts = {}
+        for lv = 1, 3 do
+            if lvCount[lv] then
+                table.insert(parts, string.format("%s×%d", LV_NAMES[lv], lvCount[lv]))
+            end
+        end
+        lvInfo = " (" .. table.concat(parts, " ") .. ")"
+    end
+
+    print(string.format("ME网络: %s  |  钻机: %d台%s (%d槽)  |  AR眼镜: %s",
+          meConnected and "在线" or "离线",
+          #gt_machines, lvInfo, totalSlots,
+          glasses and "在线" or "离线"))
+    print("--------------------------------------------------------------------------------")
+
+    -- 流体状态（显示当前值 / 200%目标）
     if #PROCESSED_FLUIDS > 0 then
         for i = 1, #PROCESSED_FLUIDS, 4 do
             local lineLabel = "  "
@@ -347,13 +460,15 @@ local function drawDashboard(target, adjustmentMsg)
                 local label = fluid.display
                 local amount = getFluidAmount(fluid.name)
                 local threshold = fluid.threshold
+                local target = (threshold > 0) and (threshold * TARGET_RATIO) or threshold
                 local valueStr
                 if amount == nil then
                     valueStr = "断连"
                 elseif threshold == -1 then
-                    valueStr = string.format("%s (持续)", formatFluidAmount(amount))
+                    valueStr = string.format("%s (--)", formatFluidAmount(amount))
                 else
-                    valueStr = string.format("%s / %s", formatFluidAmount(amount), formatFluidAmount(threshold))
+                    -- 显示 当前值 / 200%目标
+                    valueStr = string.format("%s/%s", formatFluidAmount(amount), formatFluidAmount(target))
                 end
                 local space = 16 - GetUtf8Len(label)
                 lineLabel = lineLabel .. label .. string.rep(" ", space > 0 and space or 0)
@@ -363,21 +478,35 @@ local function drawDashboard(target, adjustmentMsg)
             print(lineValue)
         end
     end
-    print("--------------------------------------------------------------------")
+    print("--------------------------------------------------------------------------------")
 
-    if target then
-        print(string.format("【当前目标】%s (行星=%d, 气体=%d)", target.display, target.param1, target.param2))
+    -- 槽位分配概况
+    if assignments then
+        -- 统计各流体分配了几个槽位
+        local fluidSlotCount = {}
+        local assignedFluids = {}
+        for _, a in ipairs(assignments) do
+            fluidSlotCount[a.fluid.name] = (fluidSlotCount[a.fluid.name] or 0) + 1
+            assignedFluids[a.fluid.name] = a.fluid
+        end
+        local parts = {}
+        for _, fluid in ipairs(PROCESSED_FLUIDS) do
+            if fluidSlotCount[fluid.name] then
+                table.insert(parts, string.format("%s×%d", fluid.display, fluidSlotCount[fluid.name]))
+            end
+        end
+        print(string.format("【槽位分配】%d/%d 槽工作中: %s", #assignments, totalSlots, table.concat(parts, ", ")))
     else
-        print("【当前目标】无（所有流体充足）")
+        print("【槽位分配】0/" .. totalSlots .. " 槽工作中（全部达标，待关机）")
     end
 
     if adjustmentMsg and adjustmentMsg ~= "" then
         print("【操作日志】" .. adjustmentMsg)
     end
-    print("====================================================================")
+    print("================================================================================")
 end
 
--- ==================== 执行维持（修改后：无目标时强制关闭） ====================
+-- ==================== 执行维持 ====================
 local function performMaintenance()
     if #gt_machines == 0 then
         drawDashboard(nil, "警告：太空钻机离线，跳过维持检查")
@@ -388,48 +517,42 @@ local function performMaintenance()
         return
     end
 
-    local target = findFluidToRefill()
+    local assignments = assignSlots()
     local adjustmentMsg = ""
 
-    if target == nil then
-        -- 无目标：强制关闭所有钻机（覆盖手动开启）
-        adjustmentMsg = "所有流体充足，无目标，正在关闭所有钻机"
+    if assignments == nil then
+        -- 所有流体达到200%目标 → 强制关闭所有钻机
+        adjustmentMsg = "所有流体已达200%目标，正在关闭所有钻机"
         local shutDownCount = shutdownAllMachines()
         adjustmentMsg = adjustmentMsg .. string.format(" | 已关闭 %d 台机器", shutDownCount)
-        lastTargetFluid = nil
+        -- 清空槽位分配记录
+        slotAssignments = {}
     else
-        -- 有目标：仅当目标变化时才调整
-        local targetChanged = false
-        if lastTargetFluid == nil then
-            targetChanged = true
-        elseif target.name ~= lastTargetFluid.name then
-            targetChanged = true
-        end
+        -- 应用槽位分配
+        local changedMachines, changedSlots = applySlotAssignments(assignments)
 
-        if targetChanged then
-            if target.threshold == -1 then
-                adjustmentMsg = string.format("所有常规流体充足，切换至持续获取 %s", target.display)
-            else
-                adjustmentMsg = string.format("检测到 %s 低于阈值，切换至补充", target.display)
+        if changedSlots > 0 then
+            -- 构建变更摘要
+            local fluidNames = {}
+            local seen = {}
+            for _, a in ipairs(assignments) do
+                if not seen[a.fluid.name] then
+                    table.insert(fluidNames, a.fluid.display)
+                    seen[a.fluid.name] = true
+                end
             end
-            local successCount = adjustAllMachines(target.param1, target.param2)
-            if successCount > 0 then
-                adjustmentMsg = adjustmentMsg .. string.format(" | 已调整 %d 台机器 %s",
-                    successCount,
-                    target.threshold == -1 and "持续获取" or "补充")
-            else
-                adjustmentMsg = adjustmentMsg .. " | 所有机器参数调整失败"
-            end
-            lastTargetFluid = target
+            adjustmentMsg = string.format("分配 %d 槽位 (%d 变更) → %d 种流体: %s",
+                #assignments, changedSlots, #fluidNames, table.concat(fluidNames, ", "))
+            adjustmentMsg = adjustmentMsg .. string.format(" | 调整 %d 台机器", changedMachines)
         else
-            adjustmentMsg = string.format("目标未变化，保持当前设置（%s）", target.display)
+            adjustmentMsg = string.format("槽位分配无变化，%d 槽位持续工作中", #assignments)
         end
     end
 
-    drawDashboard(target, adjustmentMsg)
+    drawDashboard(assignments, adjustmentMsg)
 end
 
--- ==================== 初始化 ====================
+-- ==================== 初始化：流体配置 ====================
 for _, config in ipairs(FLUID_CONFIGS) do
     local name = config[1]
     local thresholdRaw = config[2]
@@ -452,24 +575,67 @@ for _, config in ipairs(FLUID_CONFIGS) do
     })
 end
 
+-- ==================== 初始化：扫描太空钻机（含等级检测） ====================
 print("正在扫描太空钻机...")
 if not component.isAvailable("gt_machine") then
     print("警告：未检测到 GT 机器组件，维持功能将不可用")
 else
     local count = 0
     for address, _ in component.list("gt_machine") do
-        local machine = component.proxy(address)
-        local name = machine.getName() or ""
-        if name:lower():match("pump") or name:lower():match("projectmodulepump") then
-            table.insert(gt_machines, machine)
-            count = count + 1
-            print(string.format("  发现钻机: %s (%s)", address, name))
+        local ok, proxy = pcall(component.proxy, address)
+        if ok then
+            local okName, rawName = pcall(proxy.getName)
+            if okName then
+                local name = rawName:lower()
+
+                -- 等级检测：匹配 projectmodulepumpt1/2/3
+                local lv = tonumber(name:match("projectmodulepumpt([123])"))
+                if not lv then
+                    -- 兼容旧命名（默认假定 lv2）
+                    if name:match("pump") then
+                        lv = 2
+                    end
+                end
+
+                if lv then
+                    local slotCount = PUMP_SLOTS[lv] or 4
+                    local parallel = PUMP_PARALLEL[lv] or 4
+
+                    -- 构建槽位列表
+                    local slots = {}
+                    if slotCount == 1 then
+                        slots = {0}
+                    else
+                        for s = 0, (slotCount - 1) * 2, 2 do
+                            table.insert(slots, s)
+                        end
+                    end
+
+                    -- 设置并行度
+                    for i = 0, slotCount - 1 do
+                        pcall(proxy.setParameter, "recipe" .. i .. ".parallel", parallel)
+                    end
+
+                    table.insert(gt_machines, {
+                        proxy = proxy,
+                        address = address,
+                        lv = lv,
+                        name = rawName,
+                        slots = slots
+                    })
+                    totalSlots = totalSlots + slotCount
+                    count = count + 1
+                    print(string.format("  发现钻机: %s %s (%s, %d槽, parallel=%d)",
+                        address:sub(1, 8), rawName, LV_NAMES[lv], slotCount, parallel))
+                end
+            end
         end
     end
+
     if count == 0 then
         print("警告：未找到任何钻机，维持功能将不可用")
     else
-        print(string.format("成功初始化 %d 台钻机", count))
+        print(string.format("成功初始化 %d 台钻机，共 %d 个抽取槽位", count, totalSlots))
     end
 end
 
@@ -491,8 +657,9 @@ local function main()
     end
 
     term.clear()
-    print("===== 太空电梯流体监控与维持系统 Version 1.2 By GFCYqw =====")
-    print(string.format("AR 眼镜刷新间隔: %ds, 维持检查间隔: %ds", glassesInterval, checkInterval))
+    print("===== 太空电梯流体监控与维持系统 v2.0 By GFCYqw ======")
+    print(string.format("AR 眼镜刷新间隔: %ds, 维持检查间隔: %ds, 目标倍率: %d%%",
+          glassesInterval, checkInterval, math.floor(TARGET_RATIO * 100)))
     print("按 Ctrl+C 退出")
     print("==================================")
     os.sleep(1)
@@ -502,6 +669,8 @@ local function main()
     startTime = computer.uptime()
     lastGlassesTime = startTime
     lastCheckTime = startTime
+
+    -- 首次执行维持
     performMaintenance()
     lastCheckTime = computer.uptime()
 
