@@ -318,13 +318,19 @@ local function assignSlots()
         end
     end
 
-    -- 2. 按优先级筛选未达200%目标的流体（PROCESSED_FLUIDS 顺序 = 优先级）
+    -- 2. 筛选未达200%目标的流体，计算缺额（deficit = 目标 - 当前）
     local needy = {}
+    local totalDeficit = 0
     for _, fluid in ipairs(PROCESSED_FLUIDS) do
-        if fluid.threshold > 0 then  -- 跳过 threshold==-1 的"持续"流体
+        if fluid.threshold > 0 then
             local amount = getFluidAmount(fluid.name)
-            if amount ~= nil and amount < fluid.threshold * TARGET_RATIO then
-                table.insert(needy, fluid)
+            if amount ~= nil then
+                local target = fluid.threshold * TARGET_RATIO
+                if amount < target then
+                    local deficit = target - amount
+                    table.insert(needy, {fluid = fluid, deficit = deficit})
+                    totalDeficit = totalDeficit + deficit
+                end
             end
         end
     end
@@ -334,30 +340,38 @@ local function assignSlots()
         return nil
     end
 
-    -- 4. 分配：先按优先级一对一分配，多余槽位随机补充
+    -- 4. 按缺额比例分配槽位数（最大余数法，参考 pump_wiki.lua）
     local nSlots = #allSlots
-    local nNeedy = #needy
-    local assignments = {}
+    local remainders = {}
+    local allocatedTotal = 0
 
-    -- 前 min(nSlots, nNeedy) 个槽位按优先级分配
-    for i = 1, math.min(nSlots, nNeedy) do
-        table.insert(assignments, {
-            machine = allSlots[i].machine,
-            slotIdx = allSlots[i].slotIdx,
-            fluid = needy[i]
-        })
+    for i, item in ipairs(needy) do
+        local raw = nSlots * item.deficit / totalDeficit
+        local base = math.floor(raw)
+        item.slots = base
+        remainders[i] = {idx = i, remainder = raw - base}
+        allocatedTotal = allocatedTotal + base
     end
 
-    -- 多余槽位从 needy 中随机选取
-    if nSlots > nNeedy then
-        math.randomseed(math.floor(computer.uptime() * 1000) % 2147483647)
-        for i = nNeedy + 1, nSlots do
-            local r = math.random(1, nNeedy)
-            table.insert(assignments, {
-                machine = allSlots[i].machine,
-                slotIdx = allSlots[i].slotIdx,
-                fluid = needy[r]
-            })
+    -- 剩余槽位按余数从大到小分配
+    table.sort(remainders, function(a, b) return a.remainder > b.remainder end)
+    for i = 1, nSlots - allocatedTotal do
+        needy[remainders[i].idx].slots = needy[remainders[i].idx].slots + 1
+    end
+
+    -- 5. 构建分配方案（按优先级顺序填充槽位）
+    local assignments = {}
+    local slotIdx = 1
+    for _, item in ipairs(needy) do
+        for _ = 1, item.slots do
+            if slotIdx <= nSlots then
+                table.insert(assignments, {
+                    machine = allSlots[slotIdx].machine,
+                    slotIdx = allSlots[slotIdx].slotIdx,
+                    fluid = item.fluid
+                })
+                slotIdx = slotIdx + 1
+            end
         end
     end
 
