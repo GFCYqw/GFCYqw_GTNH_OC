@@ -49,11 +49,13 @@ local FLUID_CONFIGS = {
     {"deuterium", "1g", 6, 1, "氘" },
     {"tritium", "1g", 6, 2, "氚" },
     {"helium-3", "1g", 5, 2, "氦-3" },
-    {"fluorine", "4g", 7, 2, "氟" },
+    {"fluorine", "1g", 7, 2, "氟" },
     {"sulfuricacid", "1g", 4, 1, "硫酸" },
     {"chlorobenzene", "1g", 2, 1, "氯苯" },
     {"ammonia", "1g", 6, 3, "氨气" },
     {"ic2distilledwater", "2g", 8, 5, "蒸馏水" },
+    {"hydrogen", "2g", 9, 1, "氢"}
+    {"oxygen", "2g", 7, 4, "氧"}
     {"helium", "2g", 5, 4, "氦" },
     {"argon", "100m", 5, 7, "氩" },
     {"krypton", "100m", 5, 8, "氪" },
@@ -306,7 +308,7 @@ local function shutdownAllMachines()
     return count
 end
 
--- ==================== 优先级槽位分配算法 ====================
+-- ==================== 阈值分级槽位分配算法 ====================
 local function assignSlots()
     if #gt_machines == 0 then return nil end
 
@@ -317,60 +319,88 @@ local function assignSlots()
             table.insert(allSlots, {machine = m, slotIdx = slotIdx})
         end
     end
+    local nSlots = #allSlots
 
-    -- 2. 筛选未达200%目标的流体，计算缺额（deficit = 目标 - 当前）
-    local needy = {}
-    local totalDeficit = 0
+    -- 2. 按存量/阈值比分级（优先级顺序 = PROCESSED_FLUIDS 顺序）
+    local tiers = {
+        {name = "urgent",   cap = nSlots,                    fluids = {}},  -- <25%：可使用全部槽位
+        {name = "critical", cap = math.floor(nSlots * 0.5),  fluids = {}},  -- 25~50%：可使用50%
+        {name = "low",      cap = math.floor(nSlots * 0.25), fluids = {}},  -- 50~100%：可使用25%
+        {name = "collect",  cap = 1,                         fluids = {}},  -- 100~200%：最多1槽
+    }
+
+    local hasAny = false
     for _, fluid in ipairs(PROCESSED_FLUIDS) do
         if fluid.threshold > 0 then
             local amount = getFluidAmount(fluid.name)
             if amount ~= nil then
                 local target = fluid.threshold * TARGET_RATIO
                 if amount < target then
+                    hasAny = true
+                    local ratio = amount / fluid.threshold
                     local deficit = target - amount
-                    table.insert(needy, {fluid = fluid, deficit = deficit})
-                    totalDeficit = totalDeficit + deficit
+                    if ratio < 0.25 then
+                        table.insert(tiers[1].fluids, {fluid = fluid, deficit = deficit})
+                    elseif ratio < 0.5 then
+                        table.insert(tiers[2].fluids, {fluid = fluid, deficit = deficit})
+                    elseif ratio < 1.0 then
+                        table.insert(tiers[3].fluids, {fluid = fluid, deficit = deficit})
+                    else
+                        table.insert(tiers[4].fluids, {fluid = fluid, deficit = deficit})
+                    end
                 end
             end
         end
     end
 
-    -- 3. 所有流体达标 → 返回 nil（信号：关机）
-    if #needy == 0 then
-        return nil
+    -- 3. 全部达标 → 关机
+    if not hasAny then return nil end
+
+    -- 4. 瀑布分配：高优先级等级先分，剩余流入下一级
+    local remaining = nSlots
+    for _, tier in ipairs(tiers) do
+        if remaining > 0 and #tier.fluids > 0 then
+            local tierSlots = math.min(tier.cap, remaining)
+            if tierSlots > 0 then
+                -- 级内按优先级：最高优先级获得该级全部槽位
+                for i, item in ipairs(tier.fluids) do
+                    item.slots = (i == 1) and tierSlots or 0
+                end
+
+                remaining = remaining - tierSlots
+            end
+        end
     end
 
-    -- 4. 按缺额比例分配槽位数（最大余数法，参考 pump_wiki.lua）
-    local nSlots = #allSlots
-    local remainders = {}
-    local allocatedTotal = 0
-
-    for i, item in ipairs(needy) do
-        local raw = nSlots * item.deficit / totalDeficit
-        local base = math.floor(raw)
-        item.slots = base
-        remainders[i] = {idx = i, remainder = raw - base}
-        allocatedTotal = allocatedTotal + base
-    end
-
-    -- 剩余槽位按余数从大到小分配
-    table.sort(remainders, function(a, b) return a.remainder > b.remainder end)
-    for i = 1, nSlots - allocatedTotal do
-        needy[remainders[i].idx].slots = needy[remainders[i].idx].slots + 1
+    -- 4.5 剩余槽位按优先级逐一填充（不再随机）
+    while remaining > 0 do
+        local assigned = false
+        for _, tier in ipairs(tiers) do
+            for _, item in ipairs(tier.fluids) do
+                if remaining > 0 then
+                    item.slots = (item.slots or 0) + 1
+                    remaining = remaining - 1
+                    assigned = true
+                end
+            end
+        end
+        if not assigned then break end
     end
 
     -- 5. 构建分配方案（按优先级顺序填充槽位）
     local assignments = {}
     local slotIdx = 1
-    for _, item in ipairs(needy) do
-        for _ = 1, item.slots do
-            if slotIdx <= nSlots then
-                table.insert(assignments, {
-                    machine = allSlots[slotIdx].machine,
-                    slotIdx = allSlots[slotIdx].slotIdx,
-                    fluid = item.fluid
-                })
-                slotIdx = slotIdx + 1
+    for _, tier in ipairs(tiers) do
+        for _, item in ipairs(tier.fluids) do
+            for _ = 1, (item.slots or 0) do
+                if slotIdx <= nSlots then
+                    table.insert(assignments, {
+                        machine = allSlots[slotIdx].machine,
+                        slotIdx = allSlots[slotIdx].slotIdx,
+                        fluid = item.fluid
+                    })
+                    slotIdx = slotIdx + 1
+                end
             end
         end
     end
