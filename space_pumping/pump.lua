@@ -34,8 +34,7 @@ local textScale = 0.5
 local offsetX = 3
 local offsetY = 17
 local lineSpacing = 0.5
-local glassesInterval = 3          -- 眼镜刷新间隔（秒）
-local checkInterval = 30           -- 维持检查间隔（秒）
+local checkInterval = 30           -- 维持检查与眼镜刷新间隔（秒）
 local TARGET_RATIO = 2.0           -- 目标倍率（200%）
 
 -- 泵等级常量
@@ -45,28 +44,30 @@ local LV_NAMES = {[1]="LV1", [2]="LV2", [3]="LV3"}
 
 -- 流体配置：{注册名, 阈值(mB), 行星参数, 气体参数, 显示名}
 local FLUID_CONFIGS = {
-    {"liquidair", "1g", 8, 2, "液态空气" },
-    {"deuterium", "1g", 6, 1, "氘" },
-    {"tritium", "1g", 6, 2, "氚" },
-    {"helium-3", "1g", 5, 2, "氦-3" },
-    {"fluorine", "1g", 7, 2, "氟" },
+    {"liquidair", "2g", 8, 2, "液态空气" },
+    {"deuterium", "2g", 6, 1, "氘" },
+    {"tritium", "2g", 6, 2, "氚" },
+    {"helium-3", "2g", 5, 2, "氦-3" },
     {"sulfuricacid", "1g", 4, 1, "硫酸" },
     {"chlorobenzene", "1g", 2, 1, "氯苯" },
     {"ammonia", "1g", 6, 3, "氨气" },
     {"ic2distilledwater", "2g", 8, 5, "蒸馏水" },
-    {"hydrogen", "2g", 9, 1, "氢"}
-    {"oxygen", "2g", 7, 4, "氧"}
-    {"helium", "2g", 5, 4, "氦" },
+    {"hydrogen", "10g", 8, 1, "氢"},
+    {"oxygen", "10g", 7, 4, "氧"},
+    {"fluorine", "10g", 7, 2, "氟" },
+    {"helium", "10g", 5, 4, "氦" },
     {"argon", "100m", 5, 7, "氩" },
     {"krypton", "100m", 5, 8, "氪" },
     {"xenon", "100m", 6, 4, "氙" },
     {"radon", "100m", 8, 6, "氡" },
     {"lava", "100m", 3, 3, "熔岩" },
     {"oil", "100m", 4, 3, "石油" },
+    {"liquid_heavy_oil", "100m", 4, 4, "重油" },
     {"methane", "100m", 5, 9, "甲烷" },
-    {"ethylene", "1g", 6, 5, "乙烯" },
-    {"molten.iron", "100m", 4, 2, "熔融铁" },
-    {"molten.copper", "100m", 8, 3, "熔融铜" },
+    {"ethylene", "100m", 6, 5, "乙烯" },
+    {"hydrofluoricacid_gt5u", "1g", 7, 1, "氢氟酸" },
+    {"molten.iron", "1g", 4, 2, "熔融铁" },
+    {"molten.copper", "10g", 8, 3, "熔融铜" },
     {"molten.tin", "100m", 8, 7, "熔融锡" },
     {"molten.lead", "100m", 4, 5, "熔融铅" },
 }
@@ -78,7 +79,6 @@ local machineKey = "machine_count"
 local texts = {}
 local lastAmounts = {}          -- 存储上次的 amount
 local doContinue = true
-local lastGlassesTime = 0
 local lastCheckTime = 0
 local startTime = 0
 
@@ -114,18 +114,31 @@ local function GetUtf8Len(str)
     return len
 end
 
-local function getFluidAmount(fluidName)
+local function fetchFluidCache()
     if not me then return nil end
     local ok, fluids = pcall(me.getFluidsInNetwork, me)
     if not ok then meConnected = false; return nil end
     meConnected = true
+    local cache = {}
     for _, fluid in ipairs(fluids) do
-        if fluid.name == fluidName then
+        if fluid.name then
             local amount = fluid.amount or fluid.size
-            return tonumber(amount) or 0
+            cache[fluid.name] = tonumber(amount) or 0
         end
     end
-    return 0
+    return cache
+end
+
+local function getFluidAmount(fluidName, cache)
+    if not me then return nil end
+    if cache then
+        local amount = cache[fluidName]
+        if amount ~= nil then return amount end
+        return 0
+    end
+    local fluidCache = fetchFluidCache()
+    if not fluidCache then return nil end
+    return fluidCache[fluidName] or 0
 end
 
 -- ==================== 时间格式化 ====================
@@ -197,8 +210,10 @@ local function glassesSetup()
     glasses.removeAll()
     createShadowText(statusKey, offsetX, offsetY)
     createShadowText(machineKey, offsetX, offsetY + lineSpacing)
+    createShadowText("separator", offsetX, offsetY + 2 * lineSpacing)
+    setShadowText("separator", "──────────", 255, 255, 255)
     for i, fluid in ipairs(PROCESSED_FLUIDS) do
-        local y = offsetY + (i + 1) * lineSpacing
+        local y = offsetY + (i + 2) * lineSpacing
         createShadowText("fluid_" .. fluid.name, offsetX, y)
     end
 end
@@ -221,7 +236,7 @@ local function buildMachineText()
 end
 
 -- 使用眼镜刷新的实际间隔计算变化率
-local function updateGlasses(now)
+local function updateGlasses(now, fluidCache)
     if not glasses then return end
 
     -- 更新状态和机器数（含等级）
@@ -232,12 +247,12 @@ local function updateGlasses(now)
     local machineText, machineColor = buildMachineText()
     setShadowText(machineKey, machineText, table.unpack(machineColor))
 
-    -- 计算时间差（两次眼镜刷新之间的间隔）
-    local timeDiff = now - lastGlassesTime
+    -- 计算时间差（两次刷新之间的间隔，与 checkInterval 一致）
+    local timeDiff = now - lastCheckTime
     if timeDiff <= 0 then timeDiff = 0 end
 
     for _, fluid in ipairs(PROCESSED_FLUIDS) do
-        local amount = getFluidAmount(fluid.name)
+        local amount = getFluidAmount(fluid.name, fluidCache)
         local key = "fluid_" .. fluid.name
 
         local diff = 0
@@ -257,24 +272,22 @@ local function updateGlasses(now)
         local r, g, b = 255, 255, 255
         if amount == nil then
             r, g, b = 128, 128, 128           -- 灰色：断连
-        elseif fluid.threshold > 0 and amount < fluid.threshold then
-            -- 低于100%阈值
-            if diff < 0 then
-                r, g, b = 255, 85, 85         -- 红色：低于阈值且在减少
+        elseif fluid.threshold > 0 then
+            local ratio = amount / fluid.threshold
+            if ratio < 0.20 then
+                r, g, b = 255, 85, 85         -- 红色：低于20%阈值
+            elseif ratio < 0.50 then
+                r, g, b = 255, 165, 0         -- 橙色：20%-50%阈值
+            elseif ratio < 1.0 then
+                r, g, b = 255, 255, 85        -- 黄色：50%-100%阈值
+            elseif ratio < TARGET_RATIO then
+                r, g, b = 255, 255, 255       -- 白色：100%-200%
             else
-                r, g, b = 255, 165, 0         -- 橙色：低于阈值但在增加
+                r, g, b = 144, 238, 144       -- 浅绿色：大于200%
             end
-        elseif fluid.threshold > 0 and amount < fluid.threshold * TARGET_RATIO then
-            -- 100%~200%之间
-            if diff < 0 then
-                r, g, b = 255, 255, 85        -- 黄色：收集中但在减少
-            else
-                r, g, b = 85, 255, 85         -- 绿色：收集中且在增加
-            end
-        else
-            r, g, b = 255, 255, 255           -- 白色：已达200%目标
         end
         setShadowText(key, text, r, g, b)
+        computer.pullSignal(0)                -- Phase 3.1: 防御性 yield
     end
 end
 
@@ -285,7 +298,7 @@ local function safelyStopMachine(proxy)
         local maxWait = 60
         local waitCount = 0
         while proxy.isMachineActive() and waitCount < maxWait do
-            os.sleep(1)
+            event.pull(0.1, "interrupted")
             waitCount = waitCount + 1
         end
         if waitCount >= maxWait then
@@ -309,8 +322,9 @@ local function shutdownAllMachines()
 end
 
 -- ==================== 阈值分级槽位分配算法 ====================
-local function assignSlots()
+local function assignSlots(fluidCache)
     if #gt_machines == 0 then return nil end
+    if not fluidCache then return nil end
 
     -- 1. 收集所有槽位
     local allSlots = {}
@@ -332,7 +346,7 @@ local function assignSlots()
     local hasAny = false
     for _, fluid in ipairs(PROCESSED_FLUIDS) do
         if fluid.threshold > 0 then
-            local amount = getFluidAmount(fluid.name)
+            local amount = fluidCache[fluid.name] or 0
             if amount ~= nil then
                 local target = fluid.threshold * TARGET_RATIO
                 if amount < target then
@@ -351,6 +365,7 @@ local function assignSlots()
                 end
             end
         end
+        computer.pullSignal(0)                -- Phase 3.2: 防御性 yield
     end
 
     -- 3. 全部达标 → 关机
@@ -450,6 +465,7 @@ local function applySlotAssignments(assignments)
                 print(string.format("警告：机器 %s 参数设置失败", machine.address:sub(1, 8)))
             end
         end
+        computer.pullSignal(0)                -- Phase 3.3: 防御性 yield
     end
 
     -- 确保所有有分配的机器都在运行（未变化的机器可能被手动关闭）
@@ -465,7 +481,7 @@ local function applySlotAssignments(assignments)
 end
 
 -- ==================== 终端仪表板 ====================
-local function drawDashboard(assignments, adjustmentMsg)
+local function drawDashboard(assignments, adjustmentMsg, fluidCache)
     term.clear()
     print("======================  太空电梯流体监控与维持系统 v2.0  =======================")
     local uptime = computer.uptime()
@@ -502,7 +518,7 @@ local function drawDashboard(assignments, adjustmentMsg)
             for j = i, math.min(i+3, #PROCESSED_FLUIDS) do
                 local fluid = PROCESSED_FLUIDS[j]
                 local label = fluid.display
-                local amount = getFluidAmount(fluid.name)
+                local amount = fluidCache and fluidCache[fluid.name]
                 local threshold = fluid.threshold
                 local target = (threshold > 0) and (threshold * TARGET_RATIO) or threshold
                 local valueStr
@@ -553,15 +569,18 @@ end
 -- ==================== 执行维持 ====================
 local function performMaintenance()
     if #gt_machines == 0 then
-        drawDashboard(nil, "警告：太空钻机离线，跳过维持检查")
-        return
-    end
-    if not meConnected then
-        drawDashboard(nil, "警告：ME 离线，跳过维持检查")
+        drawDashboard(nil, "警告：太空钻机离线，跳过维持检查", nil)
         return
     end
 
-    local assignments = assignSlots()
+    -- 统一拉取流体存量缓存（整个周期只调一次 ME）
+    local fluidCache = fetchFluidCache()
+    if not fluidCache then
+        drawDashboard(nil, "警告：ME 离线，跳过维持检查", nil)
+        return
+    end
+
+    local assignments = assignSlots(fluidCache)
     local adjustmentMsg = ""
 
     if assignments == nil then
@@ -593,7 +612,12 @@ local function performMaintenance()
         end
     end
 
-    drawDashboard(assignments, adjustmentMsg)
+    drawDashboard(assignments, adjustmentMsg, fluidCache)
+
+    -- 统一刷新 AR 眼镜显示
+    if glasses then
+        updateGlasses(computer.uptime(), fluidCache)
+    end
 end
 
 -- ==================== 初始化：流体配置 ====================
@@ -701,9 +725,9 @@ local function main()
     end
 
     term.clear()
-    print("===== 太空电梯流体监控与维持系统 v2.0 By GFCYqw ======")
-    print(string.format("AR 眼镜刷新间隔: %ds, 维持检查间隔: %ds, 目标倍率: %d%%",
-          glassesInterval, checkInterval, math.floor(TARGET_RATIO * 100)))
+    print("===== 太空电梯流体监控与维持系统 v2.1 By GFCYqw ======")
+    print(string.format("检查与眼镜刷新间隔: %ds, 目标倍率: %d%%",
+          checkInterval, math.floor(TARGET_RATIO * 100)))
     print("按 Ctrl+C 退出")
     print("==================================")
     os.sleep(1)
@@ -711,7 +735,6 @@ local function main()
     event.listen("interrupted", onInterrupted)
 
     startTime = computer.uptime()
-    lastGlassesTime = startTime
     lastCheckTime = startTime
 
     -- 首次执行维持
@@ -719,21 +742,17 @@ local function main()
     lastCheckTime = computer.uptime()
 
     while doContinue do
-        local now = computer.uptime()
-
-        -- 眼镜更新（使用眼镜间隔）
-        if glasses and now - lastGlassesTime >= glassesInterval then
-            updateGlasses(now)
-            lastGlassesTime = now
-        end
-
-        -- 维持检查
-        if now - lastCheckTime >= checkInterval then
+        -- 维持检查 + 眼镜刷新（统一间隔，共用缓存）
+        if computer.uptime() - lastCheckTime >= checkInterval then
             performMaintenance()
-            lastCheckTime = now
+            lastCheckTime = computer.uptime()
         end
 
-        os.sleep(1)
+        -- 等待下一周期（event.pull 确保看门狗重置）
+        local deadline = computer.uptime() + 1
+        while computer.uptime() < deadline and doContinue do
+            event.pull(0.5, "interrupted")
+        end
     end
 
     event.ignore("interrupted", onInterrupted)
